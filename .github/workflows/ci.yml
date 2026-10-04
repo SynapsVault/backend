@@ -14,9 +14,9 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: atrium
-          POSTGRES_PASSWORD: atrium
-          POSTGRES_DB: atriumind_test
+          POSTGRES_USER: synapse
+          POSTGRES_PASSWORD: synapse
+          POSTGRES_DB: synapsvault_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -38,7 +38,7 @@ jobs:
 
       - name: Unit tests
         env:
-          DATABASE_URL:                    postgres://atrium:atrium@localhost:5432/atriumind_test
+          DATABASE_URL:                    postgres://synapse:synapse@localhost:5432/synapsvault_test
           NODE_ENV:                        test
           STELLAR_NETWORK:                 testnet
           NETWORK:                         testnet
@@ -69,4 +69,4 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm run build
       - name: Docker build smoke test
-        run: docker build -t atriumind-backend:ci . || true
+        run: docker build -t synapsvault-backend:ci . || true

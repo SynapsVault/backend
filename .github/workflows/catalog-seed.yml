@@ -10,16 +10,16 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: atrium
-          POSTGRES_PASSWORD: atrium
-          POSTGRES_DB: atriumind
+          POSTGRES_USER: synapse
+          POSTGRES_PASSWORD: synapse
+          POSTGRES_DB: synapsvault
         ports: ["5432:5432"]
         options: --health-cmd pg_isready --health-interval 5s --health-retries 10
     env:
       NODE_ENV: test
       PORT: 3000
       BASE_URL: http://localhost:3000
-      DATABASE_URL: postgres://atrium:atrium@localhost:5432/atriumind
+      DATABASE_URL: postgres://synapse:synapse@localhost:5432/synapsvault
       SUPABASE_URL: https://placeholder.supabase.co
       SUPABASE_SERVICE_KEY: placeholder_key_for_testnet_ci
       SUPABASE_STORAGE_BUCKET: resources
@@ -34,7 +34,7 @@ jobs:
       VAULT_REGISTRY_CONTRACT_ID: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
       REGISTRY_CONTRACT_ID: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
       OPENROUTER_API_KEY: placeholder_not_used_for_catalog
-      ADMIN_API_KEY: atrium-admin-2025-xK9mP3nQ8rL2vB7s
+      ADMIN_API_KEY: synapse-admin-2025-xK9mP3nQ8rL2vB7s
       ALLOWED_ORIGINS: "*"
     steps:
       - uses: actions/checkout@v4
@@ -46,17 +46,17 @@ jobs:
       - name: Run SQL migrations
         run: |
           for f in $(ls drizzle/*.sql | sort); do
-            PGPASSWORD=atrium psql -h 127.0.0.1 -U atrium -d atriumind -f "$f" 2>&1 | tail -1 || true
+            PGPASSWORD=synapse psql -h 127.0.0.1 -U synapse -d synapsvault -f "$f" 2>&1 | tail -1 || true
           done
       - name: Seed via SQL
         run: |
-          PGPASSWORD=atrium psql -h 127.0.0.1 -U atrium -d atriumind << 'SQL'
+          PGPASSWORD=synapse psql -h 127.0.0.1 -U synapse -d synapsvault << 'SQL'
           INSERT INTO publishers (id, name, email, wallet_address, api_key_hash, created_at)
           VALUES
-            ('pub_001', 'AtriumMind Research Lab', 'research@atriumind.demo',
+            ('pub_001', 'SynapsVault Research Lab', 'research@synapsvault.demo',
              'GDEJJLXV2CNHF5HEGX34MU4G6L4PRVUAGD4ANF77ZDYTQJKSDSDYVVI6',
              'ak_placeholder_1', NOW()),
-            ('pub_002', 'AtriumMind Data Studio', 'data@atriumind.demo',
+            ('pub_002', 'SynapsVault Data Studio', 'data@synapsvault.demo',
              'GBXL7OEOSVNSESHD7Q2BYVVA2KPQLSSIRLDSY6HFNYPXHCEBKPNCJQKX',
              'ak_placeholder_2', NOW())
           ON CONFLICT DO NOTHING;
@@ -110,7 +110,7 @@ jobs:
             print(f'  {r.get(\"title\",\"?\")} @ {r.get(\"price\",\"?\")} USDC')
             "
             echo "=== /admin/stats ==="
-            curl -s http://localhost:3000/admin/stats -H 'X-Admin-Key: atrium-admin-2025-xK9mP3nQ8rL2vB7s'
+            curl -s http://localhost:3000/admin/stats -H 'X-Admin-Key: synapse-admin-2025-xK9mP3nQ8rL2vB7s'
             echo "::notice::Backend running - catalog verified"
           else
             echo "Server not responding on :3000"
@@ -120,7 +120,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## AtriumMind Backend" >> $GITHUB_STEP_SUMMARY
+          echo "## SynapsVault Backend" >> $GITHUB_STEP_SUMMARY
           echo "- Migrations: done" >> $GITHUB_STEP_SUMMARY
           echo "- DB seed: 2 publishers, 3 resources" >> $GITHUB_STEP_SUMMARY
           echo "- Build: done (see logs for runtime status)" >> $GITHUB_STEP_SUMMARY

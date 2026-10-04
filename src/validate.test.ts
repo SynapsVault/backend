@@ -19,14 +19,14 @@ function mockResponse() {
 describe("validate middleware", () => {
   it("passes parsed body to the next handler", () => {
     const schema = z.object({ name: z.string() }).strict();
-    const req = { body: { name: "AtriumMind" } } as Request;
+    const req = { body: { name: "SynapsVault" } } as Request;
     const res = mockResponse();
     const next = vi.fn() as NextFunction;
 
     validate(schema)(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
-    expect(req.body).toEqual({ name: "AtriumMind" });
+    expect(req.body).toEqual({ name: "SynapsVault" });
   });
 
   it("returns field-level 400 errors for invalid input", () => {

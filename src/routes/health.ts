@@ -9,20 +9,20 @@ const router: RouterType = Router();
 router.get("/health", (_req, res) => {
   res.json({
     status: "ok",
-    service: "atriumind",
+    service: "synapsvault",
     timestamp: new Date().toISOString(),
   });
 });
 
 router.get("/health/ready", async (_req, res) => {
   if (!isAccepting()) {
-    res.status(503).json({ status: "shutting_down", service: "atriumind", timestamp: new Date().toISOString() });
+    res.status(503).json({ status: "shutting_down", service: "synapsvault", timestamp: new Date().toISOString() });
     return;
   }
   const [database, sorobanRpc] = await Promise.all([probeDatabase(), probeSorobanRpc()]);
   const checks = { database, sorobanRpc };
   const status = overallReadinessStatus(checks);
-  res.status(status === "ok" ? 200 : 503).json({ status, service: "atriumind", checks, timestamp: new Date().toISOString() });
+  res.status(status === "ok" ? 200 : 503).json({ status, service: "synapsvault", checks, timestamp: new Date().toISOString() });
 });
 
 // Debug DB endpoint

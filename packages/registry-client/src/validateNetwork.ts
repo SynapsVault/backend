@@ -5,7 +5,7 @@ import {
   resolveStellarNetwork,
 } from "./networks.js";
 
-/** x402 network strings accepted by AtriumMind. */
+/** x402 network strings accepted by SynapsVault. */
 export const X402_NETWORK_IDS = {
   testnet: "stellar:testnet",
   mainnet: "stellar:pubnet",

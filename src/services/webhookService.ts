@@ -32,10 +32,10 @@ export async function deliver(t: Target, payload: WebhookPayload, attempt = 0): 
   const body    = JSON.stringify(payload);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-AtriumMind-Event":     payload.event,
-    "X-AtriumMind-Timestamp": payload.timestamp,
+    "X-SynapsVault-Event":     payload.event,
+    "X-SynapsVault-Timestamp": payload.timestamp,
   };
-  if (t.secret) headers["X-AtriumMind-Signature"] = await sign(body, t.secret);
+  if (t.secret) headers["X-SynapsVault-Signature"] = await sign(body, t.secret);
 
   try {
     const res = await fetch(t.url, { method: "POST", headers, body, signal: AbortSignal.timeout(10_000) });

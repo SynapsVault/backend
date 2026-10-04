@@ -1,1 +1,1 @@
-{"name":"@atriumind/registry-client","version":"0.0.1","type":"module","main":"dist/index.js","exports":{".":"./dist/index.js"}}
+{"name":"@synapsvault/registry-client","version":"0.0.1","type":"module","main":"dist/index.js","exports":{".":"./dist/index.js"}}

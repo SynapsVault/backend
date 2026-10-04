@@ -1,5 +1,5 @@
 /**
- * AtriumMind — Circuit Breaker
+ * SynapsVault — Circuit Breaker
  * Wraps outbound service calls to prevent cascade failures on Stellar RPC.
  */
 import { getLogger } from "../lib/logger.js";

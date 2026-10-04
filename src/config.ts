@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { z } from "zod/v4";
-// Inlined from @atriumind/registry-client (local package — avoids runtime resolution issues)
+// Inlined from @synapsvault/registry-client (local package — avoids runtime resolution issues)
 type StellarDeploymentNetwork = "testnet" | "mainnet";
 
 const NETWORK_PRESETS = {

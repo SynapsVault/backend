@@ -22,15 +22,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER:     atrium
-      POSTGRES_PASSWORD: atrium
-      POSTGRES_DB:       atriumind
+      POSTGRES_USER:     synapse
+      POSTGRES_PASSWORD: synapse
+      POSTGRES_DB:       synapsvault
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "atrium"]
+      test: ["CMD", "pg_isready", "-U", "synapse"]
       interval: 10s
       retries: 5
 

@@ -1,4 +1,4 @@
-// Inlined from @atriumind/registry-client
+// Inlined from @synapsvault/registry-client
 const NETWORKS = {
   testnet: { explorerNetwork: "testnet" },
   mainnet: { explorerNetwork: "public" },
@@ -73,7 +73,7 @@ export function buildRegistrationFailureGuidance(params: {
     `Retry by calling ${retryEndpoint} again. The resource is still listed and purchasable while registration is retried.`,
   );
   nextSteps.push(
-    "If retries keep failing, contact a AtriumMind operator with the resource ID" +
+    "If retries keep failing, contact a SynapsVault operator with the resource ID" +
       (hasHash ? " and transaction hash above." : "."),
   );
 

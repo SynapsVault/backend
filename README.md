@@ -1,8 +1,8 @@
 <div align="center">
-  <h1>⬡ AtriumMind — Backend</h1>
-  <p><strong>Express API server for the AtriumMind knowledge vault marketplace</strong></p>
+  <h1>⬡ SynapsVault — Backend</h1>
+  <p><strong>Express API server for the SynapsVault knowledge vault marketplace</strong></p>
   <p>
-    <a href="https://github.com/bolu26/AtriumMind-backend/actions"><img src="https://github.com/bolu26/AtriumMind-backend/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/SynapsVault/SynapsVault-backend/actions"><img src="https://github.com/SynapsVault/SynapsVault-backend/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <img src="https://img.shields.io/badge/Node.js-20-green" alt="Node.js">
     <img src="https://img.shields.io/badge/TypeScript-5-blue" alt="TypeScript">
     <img src="https://img.shields.io/badge/Stellar-x402-7D00FF" alt="Stellar">
@@ -14,7 +14,7 @@
 
 ## Overview
 
-AtriumMind-backend is the Express.js API powering the AtriumMind marketplace. It handles:
+SynapsVault-backend is the Express.js API powering the SynapsVault marketplace. It handles:
 
 - **Publisher registration** — API key issuance, wallet linking
 - **Resource publishing** — file upload to Supabase, link registration
@@ -28,7 +28,7 @@ AtriumMind-backend is the Express.js API powering the AtriumMind marketplace. It
 
 ```
                     ┌─────────────────────────────────────────┐
-                    │           AtriumMind Backend             │
+                    │           SynapsVault Backend             │
                     │                                         │
   Frontend ──────►  │  Express app                            │
   (React/Vite)      │  ├── /resources    CRUD + catalog       │
@@ -62,8 +62,8 @@ AtriumMind-backend is the Express.js API powering the AtriumMind marketplace. It
 ## Quick start
 
 ```bash
-git clone https://github.com/bolu26/AtriumMind-backend
-cd AtriumMind-backend
+git clone https://github.com/SynapsVault/SynapsVault-backend
+cd SynapsVault-backend
 pnpm install
 
 cp .env.example .env
@@ -86,8 +86,8 @@ pnpm build && pnpm start
 
 ```bash
 # Single container
-docker build -t atriumind-backend .
-docker run --env-file .env -p 3000:3000 atriumind-backend
+docker build -t synapsvault-backend .
+docker run --env-file .env -p 3000:3000 synapsvault-backend
 
 # Full stack (API + Postgres)
 docker compose up
@@ -137,8 +137,8 @@ Configure these GitHub secrets for CD to work:
 
 | Repo | Description |
 |---|---|
-| [AtriumMind-frontend](https://github.com/bolu26/AtriumMind-frontend) | React UI |
-| [AtriumMind-contracts](https://github.com/bolu26/AtriumMind-contracts) | Soroban contracts |
+| [SynapsVault-frontend](https://github.com/SynapsVault/SynapsVault-frontend) | React UI |
+| [SynapsVault-contracts](https://github.com/SynapsVault/SynapsVault-contracts) | Soroban contracts |
 
 ## License
 

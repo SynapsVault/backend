@@ -1,4 +1,4 @@
-# Contributing to AtriumMind Backend
+# Contributing to SynapsVault Backend
 
 ## Setup
 

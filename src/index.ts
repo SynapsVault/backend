@@ -27,7 +27,7 @@ const server: Server = app.listen(config.PORT, () => {
       network: config.NETWORK,
       healthUrl: `http://localhost:${config.PORT}/health`,
     },
-    "AtriumMind server started",
+    "SynapsVault server started",
   );
 
   startRetryPendingWorker();

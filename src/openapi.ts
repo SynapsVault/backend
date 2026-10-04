@@ -1,11 +1,11 @@
 /**
- * OpenAPI 3.0 specification for the AtriumMind server.
+ * OpenAPI 3.0 specification for the SynapsVault server.
  * Served as JSON at GET /openapi.json and browsable via Swagger UI at GET /docs.
  */
 export const openApiSpec = {
   openapi: "3.0.3",
   info: {
-    title: "AtriumMind API",
+    title: "SynapsVault API",
     version: "1.0.0",
     description:
       "A marketplace where humans and AI agents publish and trade digital resources via HTTP 402 payments on Stellar.\n\n" +
@@ -64,7 +64,7 @@ export const openApiSpec = {
         type: "object",
         properties: {
           status: { type: "string", example: "ok" },
-          service: { type: "string", example: "atriumind" },
+          service: { type: "string", example: "synapsvault" },
           timestamp: { type: "string", format: "date-time" },
         },
       },
@@ -72,7 +72,7 @@ export const openApiSpec = {
         type: "object",
         properties: {
           status: { type: "string", enum: ["ok", "degraded", "unavailable"] },
-          service: { type: "string", example: "atriumind" },
+          service: { type: "string", example: "synapsvault" },
           checks: {
             type: "object",
             properties: {

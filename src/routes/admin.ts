@@ -1,5 +1,5 @@
 /**
- * AtriumMind — Admin Routes
+ * SynapsVault — Admin Routes
  * Protected by X-Admin-Key header. Never expose to the public internet
  * without an additional layer (VPN / IP whitelist recommended).
  */
