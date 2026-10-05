@@ -2,7 +2,7 @@
   <h1>⬡ SynapsVault — Backend</h1>
   <p><strong>Express API server for the SynapsVault knowledge vault marketplace</strong></p>
   <p>
-    <a href="https://github.com/SynapsVault/SynapsVault-backend/actions"><img src="https://github.com/SynapsVault/SynapsVault-backend/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/SynapsVault/backend/actions"><img src="https://github.com/SynapsVault/backend/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <img src="https://img.shields.io/badge/Node.js-20-green" alt="Node.js">
     <img src="https://img.shields.io/badge/TypeScript-5-blue" alt="TypeScript">
     <img src="https://img.shields.io/badge/Stellar-x402-7D00FF" alt="Stellar">
@@ -62,24 +62,24 @@ SynapsVault-backend is the Express.js API powering the SynapsVault marketplace. 
 ## Quick start
 
 ```bash
-git clone https://github.com/SynapsVault/SynapsVault-backend
+git clone https://github.com/SynapsVault/backend SynapsVault-backend
 cd SynapsVault-backend
-pnpm install
+npm install
 
 cp .env.example .env
 # Fill in DATABASE_URL, SUPABASE_*, STELLAR_*, ADMIN_API_KEY
 
 # Run database migrations
-pnpm drizzle-kit migrate
+npm run db:migrate
 
 # Start dev server (hot reload)
-pnpm dev
+npm run dev
 
 # Run tests
-pnpm test
+npm run test
 
 # Production build
-pnpm build && pnpm start
+npm run build && npm start
 ```
 
 ## Docker (recommended for production)
@@ -137,8 +137,8 @@ Configure these GitHub secrets for CD to work:
 
 | Repo | Description |
 |---|---|
-| [SynapsVault-frontend](https://github.com/SynapsVault/SynapsVault-frontend) | React UI |
-| [SynapsVault-contracts](https://github.com/SynapsVault/SynapsVault-contracts) | Soroban contracts |
+| [SynapsVault-frontend](https://github.com/SynapsVault/frontend) | React UI |
+| [SynapsVault-contracts](https://github.com/SynapsVault/contracts) | Soroban contracts |
 
 ## License
 
