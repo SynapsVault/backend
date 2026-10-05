@@ -142,4 +142,4 @@ Configure these GitHub secrets for CD to work:
 
 ## License
 
-MIT © 2025 bolu26
+MIT © 2025 Busiii-adetiba
