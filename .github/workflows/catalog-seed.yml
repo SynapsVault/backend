@@ -1,11 +1,15 @@
 name: Seed Testnet Catalog
+
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+
 jobs:
   seed:
     name: Backend + DB seed + catalog verify
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -14,35 +18,37 @@ jobs:
           POSTGRES_PASSWORD: synapse
           POSTGRES_DB: synapsvault
         ports: ["5432:5432"]
-        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-retries 10
+
     env:
-      NODE_ENV: test
+      NODE_ENV: production
       PORT: 3000
-      BASE_URL: http://localhost:3000
       DATABASE_URL: postgres://synapse:synapse@localhost:5432/synapsvault
-      SUPABASE_URL: https://placeholder.supabase.co
-      SUPABASE_SERVICE_KEY: placeholder_key_for_testnet_ci
-      SUPABASE_STORAGE_BUCKET: resources
       STELLAR_NETWORK: testnet
-      NETWORK: testnet
-      SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
-      USDC_CONTRACT_ID: CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
-      FACILITATOR_URL: https://www.x402.org/facilitator
-      PAY_TO: GCK7ALS7EP5DQG4UZMON3XTNUE7SSIW27XW24UOLXDHBOHWEWIGZVPZF
-      AGENT_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
-      REGISTRY_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
-      VAULT_REGISTRY_CONTRACT_ID: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
-      REGISTRY_CONTRACT_ID: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
-      OPENROUTER_API_KEY: placeholder_not_used_for_catalog
-      ADMIN_API_KEY: synapse-admin-2025-xK9mP3nQ8rL2vB7s
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+      STELLAR_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+      STELLAR_CONTRACT_VAULT_REGISTRY: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
+      STELLAR_CONTRACT_ACCESS_LEASE: CDQZBCEPN6RCJAQLEKB3ZRNLUZXDCCFMVIS6STZNAOEAQLXD3FUBNQGX
+      STELLAR_CONTRACT_SUBSCRIPTION: CCCE6Q6WHDICGMQWXXXMM6X7YDGK3BXU4JNQJNSIA6XQRC52MQL42CD6
+      SUPABASE_URL: https://placeholder.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: placeholder_for_ci
+      ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+      STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
       ALLOWED_ORIGINS: "*"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Install deps
-        run: npm install --workspaces --include-workspace-root --legacy-peer-deps
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
       - name: Run SQL migrations
         run: |
           for f in $(ls drizzle/*.sql | sort); do
@@ -110,7 +116,7 @@ jobs:
             print(f'  {r.get(\"title\",\"?\")} @ {r.get(\"price\",\"?\")} USDC')
             "
             echo "=== /admin/stats ==="
-            curl -s http://localhost:3000/admin/stats -H 'X-Admin-Key: synapse-admin-2025-xK9mP3nQ8rL2vB7s'
+            curl -s http://localhost:3000/admin/stats -H "X-Admin-Key: $ADMIN_API_KEY"
             echo "::notice::Backend running - catalog verified"
           else
             echo "Server not responding on :3000"

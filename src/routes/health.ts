@@ -3,26 +3,49 @@ import { probeDatabase, probeSorobanRpc } from "../lib/probes.js";
 import { overallReadinessStatus } from "../lib/readiness.js";
 import { isAccepting } from "../lib/lifecycle.js";
 import { pgClient } from "../db/client.js";
+import { config } from "../config.js";
 
 const router: RouterType = Router();
 
+// Liveness probe — is the service running?
 router.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "synapsvault",
+    version: "1.0.0",
+    network: config.NETWORK,
     timestamp: new Date().toISOString(),
   });
 });
 
+// Readiness probe — is the service ready to handle requests?
 router.get("/health/ready", async (_req, res) => {
   if (!isAccepting()) {
-    res.status(503).json({ status: "shutting_down", service: "synapsvault", timestamp: new Date().toISOString() });
+    res.status(503).json({
+      status: "shutting_down",
+      service: "synapsvault",
+      timestamp: new Date().toISOString(),
+    });
     return;
   }
-  const [database, sorobanRpc] = await Promise.all([probeDatabase(), probeSorobanRpc()]);
+
+  const [database, sorobanRpc] = await Promise.all([
+    probeDatabase(),
+    probeSorobanRpc(),
+  ]);
+
   const checks = { database, sorobanRpc };
   const status = overallReadinessStatus(checks);
-  res.status(status === "ok" ? 200 : 503).json({ status, service: "synapsvault", checks, timestamp: new Date().toISOString() });
+  const statusCode = status === "ok" ? 200 : 503;
+
+  res.status(statusCode).json({
+    status,
+    service: "synapsvault",
+    checks,
+    version: "1.0.0",
+    network: config.NETWORK,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // Debug DB endpoint

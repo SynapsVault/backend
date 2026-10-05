@@ -4,11 +4,11 @@ on:
   push:
     branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   test:
-    name: Test
+    name: Test & Lint
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -29,33 +29,28 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci
 
       - name: Type check
-        run: npx tsc --noEmit || true
+        run: npm run typecheck
 
       - name: Unit tests
         env:
-          DATABASE_URL:                    postgres://synapse:synapse@localhost:5432/synapsvault_test
-          NODE_ENV:                        test
-          STELLAR_NETWORK:                 testnet
-          NETWORK:                         testnet
-          SOROBAN_RPC_URL:                 https://soroban-testnet.stellar.org
-          STELLAR_HORIZON_URL:             https://horizon-testnet.stellar.org
-          VAULT_REGISTRY_CONTRACT_ID:      CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
-          REGISTRY_CONTRACT_ID:            CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
-          ADMIN_API_KEY:                   ci-test-key
-          PAY_TO:                          GCK7ALS7EP5DQG4UZMON3XTNUE7SSIW27XW24UOLXDHBOHWEWIGZVPZF
-          AGENT_SECRET_KEY:                SBRDJBYSQIQFLQ47M7BPV5T5VFGBSWTTR2SKFVJJWFSAQW6OEB6OUV6K
-          USDC_CONTRACT_ID:                CBIELTK6YBZJU5UP2WWQEQ4YAE4MCHYVJP7SCFJ7XJHKK6TGKXBCXMM
-          SUPABASE_URL:                    https://placeholder.supabase.co
-          SUPABASE_SERVICE_KEY:            placeholder
-          SUPABASE_STORAGE_BUCKET:         resources
-          OPENROUTER_API_KEY:              placeholder
-          FACILITATOR_URL:                 https://www.x402.org/facilitator
-        run: npm test -- --reporter=verbose || true
+          DATABASE_URL: postgres://synapse:synapse@localhost:5432/synapsvault_test
+          NODE_ENV: test
+          STELLAR_NETWORK: testnet
+          STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+          STELLAR_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+          STELLAR_CONTRACT_VAULT_REGISTRY: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
+          STELLAR_CONTRACT_ACCESS_LEASE: CDQZBCEPN6RCJAQLEKB3ZRNLUZXDCCFMVIS6STZNAOEAQLXD3FUBNQGX
+          STELLAR_CONTRACT_SUBSCRIPTION: CCCE6Q6WHDICGMQWXXXMM6X7YDGK3BXU4JNQJNSIA6XQRC52MQL42CD6
+          ADMIN_API_KEY: ci-test-key
+          SUPABASE_URL: https://placeholder.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: placeholder
+        run: npm run test
 
   build:
     name: Build

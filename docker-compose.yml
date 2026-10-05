@@ -1,38 +1,88 @@
 version: "3.9"
 
 services:
+  # SynapsVault Backend API
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: synapsvault-backend
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL:         ${DATABASE_URL}
-      SUPABASE_URL:         ${SUPABASE_URL}
+      # Database
+      DATABASE_URL: ${DATABASE_URL:-postgresql://synapse:synapse@postgres:5432/synapsvault}
+
+      # Supabase (file storage)
+      SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
-      STELLAR_NETWORK:      ${STELLAR_NETWORK:-testnet}
-      STELLAR_HORIZON_URL:  ${STELLAR_HORIZON_URL:-https://horizon-testnet.stellar.org}
-      ADMIN_API_KEY:        ${ADMIN_API_KEY}
-      SENTRY_DSN:           ${SENTRY_DSN:-}
-      ALLOWED_ORIGINS:      ${ALLOWED_ORIGINS:-http://localhost:5173}
+
+      # Stellar
+      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
+      STELLAR_HORIZON_URL: ${STELLAR_HORIZON_URL:-https://horizon-testnet.stellar.org}
+      STELLAR_SOROBAN_RPC_URL: ${STELLAR_SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+
+      # Security
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+
+      # Observability
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+
+      # CORS
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+
+      # Node environment
+      NODE_ENV: ${NODE_ENV:-development}
+
     depends_on:
       postgres:
         condition: service_healthy
+
     restart: unless-stopped
 
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    networks:
+      - synapsvault
+
+  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
+    container_name: synapsvault-postgres
     environment:
-      POSTGRES_USER:     synapse
+      POSTGRES_USER: synapse
       POSTGRES_PASSWORD: synapse
-      POSTGRES_DB:       synapsvault
+      POSTGRES_DB: synapsvault
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+
     ports:
       - "5432:5432"
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "synapse"]
+      test: ["CMD", "pg_isready", "-U", "synapse", "-d", "synapsvault"]
       interval: 10s
+      timeout: 5s
       retries: 5
+      start_period: 10s
+
+    restart: unless-stopped
+
+    networks:
+      - synapsvault
 
 volumes:
   postgres_data:
+    driver: local
+
+networks:
+  synapsvault:
+    driver: bridge
