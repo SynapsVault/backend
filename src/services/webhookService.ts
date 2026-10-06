@@ -18,6 +18,11 @@ export interface WebhookPayload {
 
 interface Target { url: string; secret?: string; }
 
+export interface WebhookTarget extends Target {
+  publisherId: string;
+  events?:     WebhookEvent[];
+}
+
 const log        = getLogger();
 const DELAYS     = [1_000, 5_000, 15_000];
 
@@ -54,4 +59,49 @@ export async function deliver(t: Target, payload: WebhookPayload, attempt = 0): 
 export function emit(targets: Target[], event: WebhookEvent, data: Record<string, unknown>) {
   const payload: WebhookPayload = { event, timestamp: new Date().toISOString(), data };
   targets.forEach((t) => deliver(t, payload));
+}
+
+export async function resolveTargets(publisherId: string): Promise<WebhookTarget[]> {
+  const { db } = await import("../db/client.js");
+  const { publishers } = await import("../db/schema.js");
+  const { eq } = await import("drizzle-orm");
+
+  const rows = await db.select().from(publishers).where(eq(publishers.id, publisherId)).limit(1);
+  const row  = rows[0] as Record<string, unknown> | undefined;
+  if (!row) return [];
+
+  const config = (row.webhookConfig ?? row.webhook_config) as
+    | { enabled?: boolean; url?: string; secret?: string; events?: WebhookEvent[] }
+    | null
+    | undefined;
+  if (!config || !config.enabled || !config.url) return [];
+
+  return [{
+    publisherId,
+    url:    config.url,
+    secret: config.secret,
+    events: config.events,
+  }];
+}
+
+export async function emitToPublisher(
+  publisherId: string,
+  event: WebhookEvent,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const targets = await resolveTargets(publisherId);
+  const subscribed = targets.filter((t) => !t.events || t.events.includes(event));
+  if (subscribed.length === 0) return;
+  emit(subscribed, event, data);
+}
+
+export async function testWebhook(publisherId: string): Promise<{ delivered: number; targets: number }> {
+  const targets = await resolveTargets(publisherId);
+  const payload: WebhookPayload = {
+    event:     "resource.listed",
+    timestamp: new Date().toISOString(),
+    data:      { test: true, publisherId },
+  };
+  await Promise.all(targets.map((t) => deliver(t, payload)));
+  return { delivered: targets.length, targets: targets.length };
 }
