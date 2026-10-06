@@ -137,6 +137,117 @@ describe("requestSignatureAuth", () => {
     requestSignatureAuth(req, res, next);
     expect(next).toHaveBeenCalledOnce();
   });
+
+  it("rejects a replayed request with the same signature", () => {
+    const makeReq = () =>
+      ({
+        method: "POST",
+        originalUrl: path,
+        headers: {
+          "x-api-key": secret,
+          "x-timestamp": timestamp,
+          "x-signature": signature,
+        },
+        rawBody: Buffer.from(rawBody, "utf8"),
+      }) as unknown as Request;
+
+    const firstRes = mockResponse();
+    const firstNext = vi.fn() as NextFunction;
+    requestSignatureAuth(makeReq(), firstRes, firstNext);
+    expect(firstNext).toHaveBeenCalledOnce();
+
+    const secondRes = mockResponse();
+    const secondNext = vi.fn() as NextFunction;
+    requestSignatureAuth(makeReq(), secondRes, secondNext);
+    expect(secondNext).not.toHaveBeenCalled();
+    expect(secondRes.statusCode).toBe(401);
+    expect(secondRes.body).toEqual({ error: "Request signature already used" });
+  });
+
+  it("rejects a request with a missing signature header", () => {
+    const req = {
+      method: "POST",
+      originalUrl: path,
+      headers: {
+        "x-api-key": secret,
+        "x-timestamp": timestamp,
+      },
+      rawBody: Buffer.from(rawBody, "utf8"),
+    } as unknown as Request;
+    const res = mockResponse();
+    const next = vi.fn() as NextFunction;
+
+    requestSignatureAuth(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toEqual({ error: "Missing request signature headers" });
+  });
+
+  it("rejects a request with a missing timestamp header", () => {
+    const req = {
+      method: "POST",
+      originalUrl: path,
+      headers: {
+        "x-api-key": secret,
+        "x-signature": signature,
+      },
+      rawBody: Buffer.from(rawBody, "utf8"),
+    } as unknown as Request;
+    const res = mockResponse();
+    const next = vi.fn() as NextFunction;
+
+    requestSignatureAuth(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toEqual({ error: "Missing request signature headers" });
+  });
+
+  it("rejects a request with a non-numeric timestamp", () => {
+    const req = {
+      method: "POST",
+      originalUrl: path,
+      headers: {
+        "x-api-key": secret,
+        "x-timestamp": "not-a-number",
+        "x-signature": signature,
+      },
+      rawBody: Buffer.from(rawBody, "utf8"),
+    } as unknown as Request;
+    const res = mockResponse();
+    const next = vi.fn() as NextFunction;
+
+    requestSignatureAuth(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toEqual({ error: "Invalid request timestamp" });
+  });
+
+  it("rejects a request signed with the wrong secret", () => {
+    const badSignature = signPublisherRequest({
+      secret: "mv_wrong_secret",
+      method: "POST",
+      path,
+      timestamp,
+      bodyHash,
+    });
+    const req = {
+      method: "POST",
+      originalUrl: path,
+      headers: {
+        "x-api-key": secret,
+        "x-timestamp": timestamp,
+        "x-signature": badSignature,
+      },
+      rawBody: Buffer.from(rawBody, "utf8"),
+    } as unknown as Request;
+    const res = mockResponse();
+    const next = vi.fn() as NextFunction;
+
+    requestSignatureAuth(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toEqual({ error: "Invalid request signature" });
+  });
 });
 
 describe("requestSignatureAuth disabled", () => {

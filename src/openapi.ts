@@ -37,8 +37,24 @@ export const openApiSpec = {
         in: "header",
         name: "X-Signature",
         description:
-          "Optional HMAC-SHA256 hex digest over method, path, timestamp, and body (required when REQUIRE_REQUEST_SIGNATURE is enabled). " +
-          "Pair with X-Timestamp (unix seconds). The API key is the HMAC secret. See docs/request-signature.md.",
+          "Optional HMAC-SHA256 hex digest over method, path, timestamp, nonce, and body (required when REQUIRE_REQUEST_SIGNATURE is enabled). " +
+          "Must be paired with X-Timestamp (unix seconds) and X-Nonce (unique per request). The API key is the HMAC secret. See docs/request-signature.md.",
+      },
+      XTimestamp: {
+        type: "apiKey",
+        in: "header",
+        name: "X-Timestamp",
+        description:
+          "Unix timestamp in seconds for the request signature. Must be within the allowed clock-skew window of the server. " +
+          "Required alongside X-Signature and X-Nonce when REQUIRE_REQUEST_SIGNATURE is enabled. See docs/request-signature.md.",
+      },
+      XNonce: {
+        type: "apiKey",
+        in: "header",
+        name: "X-Nonce",
+        description:
+          "Unique, single-use nonce for the request signature to prevent replay attacks. " +
+          "Required alongside X-Signature and X-Timestamp when REQUIRE_REQUEST_SIGNATURE is enabled. See docs/request-signature.md.",
       },
       X402Payment: {
         type: "apiKey",
@@ -56,19 +72,63 @@ export const openApiSpec = {
     schemas: {
       Error: {
         type: "object",
+        description: "Standardized error response returned by all endpoints on failure.",
         properties: {
-          error: { type: "string", example: "Resource not found" },
+          error: {
+            type: "object",
+            description: "Error details.",
+            properties: {
+              code: {
+                type: "string",
+                description: "Machine-readable error code.",
+                example: "RESOURCE_NOT_FOUND",
+              },
+              message: {
+                type: "string",
+                description: "Human-readable error message.",
+                example: "Resource not found",
+              },
+              details: {
+                type: "object",
+                nullable: true,
+                additionalProperties: true,
+                description: "Optional structured context about the error (e.g. field-level validation errors).",
+              },
+            },
+            required: ["code", "message"],
+          },
+          requestId: {
+            type: "string",
+            nullable: true,
+            description: "Correlation identifier for this request, useful when contacting support.",
+            example: "req_01HZX8Y2K3M4N5P6Q7R8S9T0V1",
+          },
         },
         required: ["error"],
       },
       RateLimitError: {
         type: "object",
+        description: "Standardized error response returned when a rate limit is exceeded.",
         properties: {
-          error: { type: "string", example: "Too many requests" },
-          code: { type: "string", example: "RATE_LIMITED" },
-          retryAfterSeconds: { type: "integer", example: 60 },
+          error: {
+            type: "object",
+            properties: {
+              code: { type: "string", example: "RATE_LIMITED" },
+              message: { type: "string", example: "Too many requests" },
+              details: {
+                type: "object",
+                nullable: true,
+                additionalProperties: true,
+                properties: {
+                  retryAfterSeconds: { type: "integer", example: 60 },
+                },
+              },
+            },
+            required: ["code", "message"],
+          },
+          requestId: { type: "string", nullable: true },
         },
-        required: ["error", "code", "retryAfterSeconds"],
+        required: ["error"],
       },
       HealthResponse: {
         type: "object",
@@ -355,6 +415,88 @@ export const openApiSpec = {
           createdAt: { type: "string", format: "date-time" },
         },
       },
+      MetricsResponse: {
+        type: "object",
+        description: "Service metrics snapshot for observability and monitoring.",
+        properties: {
+          uptimeSeconds: { type: "number", format: "float" },
+          requestsTotal: { type: "integer" },
+          requestsByStatus: {
+            type: "object",
+            additionalProperties: { type: "integer" },
+            description: "Request counts keyed by HTTP status code.",
+          },
+          requestDurationMs: {
+            type: "object",
+            properties: {
+              p50: { type: "number", format: "float" },
+              p90: { type: "number", format: "float" },
+              p99: { type: "number", format: "float" },
+            },
+          },
+          resources: {
+            type: "object",
+            properties: {
+              total: { type: "integer" },
+              listed: { type: "integer" },
+              verified: { type: "integer" },
+            },
+          },
+          payments: {
+            type: "object",
+            properties: {
+              total: { type: "integer" },
+              succeeded: { type: "integer" },
+              failed: { type: "integer" },
+              volumeUsdc: { type: "string" },
+            },
+          },
+          timestamp: { type: "string", format: "date-time" },
+        },
+      },
+      BusinessMetricsResponse: {
+        type: "object",
+        description: "Aggregated business KPIs across the marketplace.",
+        properties: {
+          publishers: {
+            type: "object",
+            properties: {
+              total: { type: "integer" },
+              active: { type: "integer" },
+            },
+          },
+          resources: {
+            type: "object",
+            properties: {
+              total: { type: "integer" },
+              listed: { type: "integer" },
+              verified: { type: "integer" },
+            },
+          },
+          sales: {
+            type: "object",
+            properties: {
+              total: { type: "integer" },
+              volumeUsdc: { type: "string" },
+              avgPriceUsdc: { type: "string" },
+            },
+          },
+          topResources: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string" },
+                title: { type: "string" },
+                sales: { type: "integer" },
+                revenueUsdc: { type: "string" },
+              },
+            },
+          },
+          windowDays: { type: "integer" },
+          timestamp: { type: "string", format: "date-time" },
+        },
+      },
     },
   },
   paths: {
@@ -391,6 +533,51 @@ export const openApiSpec = {
             description: "One or more dependencies unavailable",
             content: {
               "application/json": { schema: { $ref: "#/components/schemas/ReadinessResponse" } },
+            },
+          },
+        },
+      },
+    },
+
+    // ── Metrics ─────────────────────────────────────────────────────────────
+    "/metrics": {
+      get: {
+        tags: ["Metrics"],
+        summary: "Service metrics snapshot",
+        operationId: "getMetrics",
+        description: "Returns runtime and operational metrics for monitoring and observability.",
+        responses: {
+          "200": {
+            description: "Metrics snapshot",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/MetricsResponse" } },
+            },
+          },
+        },
+      },
+    },
+    "/metrics/business": {
+      get: {
+        tags: ["Metrics"],
+        summary: "Aggregated business KPIs",
+        operationId: "getBusinessMetrics",
+        description: "Returns aggregated business metrics across publishers, resources, and sales.",
+        parameters: [
+          {
+            name: "windowDays",
+            in: "query",
+            required: false,
+            schema: { type: "integer", minimum: 1, maximum: 365, default: 30 },
+            description: "Rolling window in days for the aggregated metrics (1-365, default 30).",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Business metrics",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/BusinessMetricsResponse" },
+              },
             },
           },
         },

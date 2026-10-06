@@ -3,6 +3,7 @@ import { eq, desc } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { payments } from "../db/schema.js";
 import { emitToPublisher } from "../webhooks/emitter.js";
+import { AppError } from "../errors.js";
 
 const router: RouterType = Router();
 
@@ -23,8 +24,7 @@ router.get("/payments/:id/receipt", async (req, res) => {
     .then((rows) => rows[0] ?? null);
 
   if (!payment) {
-    res.status(404).json({ error: "Receipt not found" });
-    return;
+    throw new AppError("NOT_FOUND", "Receipt not found");
   }
 
   res.json(payment);
@@ -53,6 +53,22 @@ router.get("/buyers/:address/payments", async (req, res) => {
 router.post("/payments", async (req, res) => {
   const { resourceId, amount, payerAddress, recipientAddress, publisherId } =
     req.body ?? {};
+
+  if (
+    typeof resourceId !== "string" ||
+    resourceId.length === 0 ||
+    typeof amount !== "string" ||
+    amount.length === 0 ||
+    typeof payerAddress !== "string" ||
+    payerAddress.length === 0 ||
+    typeof recipientAddress !== "string" ||
+    recipientAddress.length === 0
+  ) {
+    throw new AppError(
+      "BAD_REQUEST",
+      "resourceId, amount, payerAddress and recipientAddress are required"
+    );
+  }
 
   const [payment] = await db
     .insert(payments)

@@ -1,4 +1,5 @@
 import { Router, type Router as RouterType } from "express";
+import { AppError } from "../errors.js";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
 import { publisherRateLimit } from "../middleware/publisherRateLimit.js";
 import { validate } from "../middleware/validate.js";
@@ -25,8 +26,7 @@ router.post("/publishers", validate(publisherRegisterSchema), async (req, res) =
     });
   } catch (err: any) {
     if (err.message?.includes("unique")) {
-      res.status(409).json({ error: "Email already registered" });
-      return;
+      throw new AppError(409, "Email already registered");
     }
     throw err;
   }
@@ -48,8 +48,7 @@ router.get("/publishers/wallet/:address", async (req, res) => {
     .then((rows) => rows[0] ?? null);
 
   if (!publisher) {
-    res.status(404).json({ error: "No publisher found for this wallet" });
-    return;
+    throw new AppError(404, "No publisher found for this wallet");
   }
 
   res.json(publisher);
@@ -176,15 +175,13 @@ router.put("/publishers/me/rate-limit", apiKeyAuth, publisherRateLimit, async (r
   const { rateLimit, rateLimitWindowSeconds } = req.body ?? {};
 
   if (rateLimit !== undefined && (typeof rateLimit !== "number" || rateLimit < 0)) {
-    res.status(400).json({ error: "rateLimit must be a non-negative number" });
-    return;
+    throw new AppError(400, "rateLimit must be a non-negative number");
   }
   if (
     rateLimitWindowSeconds !== undefined &&
     (typeof rateLimitWindowSeconds !== "number" || rateLimitWindowSeconds <= 0)
   ) {
-    res.status(400).json({ error: "rateLimitWindowSeconds must be a positive number" });
-    return;
+    throw new AppError(400, "rateLimitWindowSeconds must be a positive number");
   }
 
   const updated = await db
@@ -218,12 +215,10 @@ router.put("/publishers/me/webhooks", apiKeyAuth, publisherRateLimit, async (req
   const { webhookUrl, webhookSecret } = req.body ?? {};
 
   if (webhookUrl !== undefined && webhookUrl !== null && typeof webhookUrl !== "string") {
-    res.status(400).json({ error: "webhookUrl must be a string or null" });
-    return;
+    throw new AppError(400, "webhookUrl must be a string or null");
   }
   if (webhookSecret !== undefined && webhookSecret !== null && typeof webhookSecret !== "string") {
-    res.status(400).json({ error: "webhookSecret must be a string or null" });
-    return;
+    throw new AppError(400, "webhookSecret must be a string or null");
   }
 
   const updated = await db
@@ -247,8 +242,7 @@ router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, asyn
   const pub = req.publisher!;
 
   if (!pub.webhookUrl) {
-    res.status(400).json({ error: "No webhook URL configured" });
-    return;
+    throw new AppError(400, "No webhook URL configured");
   }
 
   const payload = {
@@ -272,10 +266,7 @@ router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, asyn
       status: response.status,
     });
   } catch (err: any) {
-    res.status(502).json({
-      delivered: false,
-      error: err.message ?? "Failed to deliver test webhook",
-    });
+    throw new AppError(502, err.message ?? "Failed to deliver test webhook");
   }
 });
 

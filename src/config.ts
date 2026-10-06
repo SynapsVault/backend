@@ -146,6 +146,12 @@ const envSchema = z.object({
   // Max distinct filter/sort/pagination combinations cached for the catalog
   // (#316). Bounds key cardinality; oldest entries are evicted (FIFO).
   CATALOG_CACHE_MAX_KEYS: z.coerce.number().int().min(1).default(200),
+
+  // Postgres connection pool tuning.
+  DB_POOL_MAX: z.coerce.number().int().min(1).default(10),
+  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(20_000),
+  DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 });
 
 const parsed = envSchema.safeParse(envWithDefaults);

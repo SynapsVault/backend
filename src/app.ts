@@ -9,6 +9,7 @@ import { inFlightMiddleware } from "./middleware/inFlight.js";
 import { requestTimeout } from "./middleware/timeout.js";
 import { requestDurationMiddleware } from "./middleware/requestDuration.js";
 import { captureServerException } from "./lib/sentry.js";
+import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import healthRouter from "./routes/health.js";
 import publisherRouter from "./routes/publishers.js";
 import registryRouter from "./routes/registry.js";
@@ -44,12 +45,11 @@ export function createApp(): Express {
   // OpenAPI spec + Swagger UI (all envs; UI is CDN-based, no extra package needed)
   app.use(docsRouter);
 
+  // 404 handler (after all routes)
+  app.use(notFoundHandler);
+
   // Global error handler
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    getLogger().error({ err, event: "unhandled_error" }, "unhandled error");
-    captureServerException(err);
-    res.status(500).json({ error: "Internal server error" });
-  });
+  app.use(errorHandler);
 
   return app;
 }

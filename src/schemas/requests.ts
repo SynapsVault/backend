@@ -96,6 +96,25 @@ export const updateWebhookConfigSchema = z
   })
   .strict();
 
+/** Standard error response body returned by the API. */
+export const errorResponseSchema = z
+  .object({
+    error: z.string().min(1),
+    message: z.string().optional(),
+    details: z.unknown().optional(),
+  })
+  .strict();
+
+/** Body for POST /payments (record a payment). */
+export const recordPaymentSchema = z
+  .object({
+    resourceId: z.string().min(1),
+    payerAddress: z.string().min(1),
+    amount: z.string().min(1),
+    txHash: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const catalogQuerySchema = z
   .object({
     verificationStatus: z.enum(["verified", "pending", "rejected"]).optional(),
