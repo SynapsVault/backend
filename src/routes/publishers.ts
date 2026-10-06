@@ -1,5 +1,6 @@
 import { Router, type Router as RouterType } from "express";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
+import { publisherRateLimit } from "../middleware/publisherRateLimit.js";
 import { validate } from "../middleware/validate.js";
 import { publisherRegisterSchema } from "../schemas/requests.js";
 import { registerPublisher, getPublisherResources } from "../services/publisherService.js";
@@ -160,6 +161,124 @@ router.get("/publishers/me/analytics", apiKeyAuth, async (req, res) => {
   });
 });
 
+// GET /publishers/me/rate-limit — own rate limit settings (authenticated)
+router.get("/publishers/me/rate-limit", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+  res.json({
+    rateLimit: pub.rateLimit,
+    rateLimitWindowSeconds: pub.rateLimitWindowSeconds,
+  });
+});
+
+// PUT /publishers/me/rate-limit — update own rate limit settings (authenticated)
+router.put("/publishers/me/rate-limit", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+  const { rateLimit, rateLimitWindowSeconds } = req.body ?? {};
+
+  if (rateLimit !== undefined && (typeof rateLimit !== "number" || rateLimit < 0)) {
+    res.status(400).json({ error: "rateLimit must be a non-negative number" });
+    return;
+  }
+  if (
+    rateLimitWindowSeconds !== undefined &&
+    (typeof rateLimitWindowSeconds !== "number" || rateLimitWindowSeconds <= 0)
+  ) {
+    res.status(400).json({ error: "rateLimitWindowSeconds must be a positive number" });
+    return;
+  }
+
+  const updated = await db
+    .update(publishers)
+    .set({
+      ...(rateLimit !== undefined ? { rateLimit } : {}),
+      ...(rateLimitWindowSeconds !== undefined ? { rateLimitWindowSeconds } : {}),
+    })
+    .where(eq(publishers.id, pub.id))
+    .returning()
+    .then((rows) => rows[0]);
+
+  res.json({
+    rateLimit: updated.rateLimit,
+    rateLimitWindowSeconds: updated.rateLimitWindowSeconds,
+  });
+});
+
+// GET /publishers/me/webhooks — own webhook settings (authenticated)
+router.get("/publishers/me/webhooks", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+  res.json({
+    webhookUrl: pub.webhookUrl,
+    webhookSecret: pub.webhookSecret ? maskSecret(pub.webhookSecret) : null,
+  });
+});
+
+// PUT /publishers/me/webhooks — update own webhook settings (authenticated)
+router.put("/publishers/me/webhooks", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+  const { webhookUrl, webhookSecret } = req.body ?? {};
+
+  if (webhookUrl !== undefined && webhookUrl !== null && typeof webhookUrl !== "string") {
+    res.status(400).json({ error: "webhookUrl must be a string or null" });
+    return;
+  }
+  if (webhookSecret !== undefined && webhookSecret !== null && typeof webhookSecret !== "string") {
+    res.status(400).json({ error: "webhookSecret must be a string or null" });
+    return;
+  }
+
+  const updated = await db
+    .update(publishers)
+    .set({
+      ...(webhookUrl !== undefined ? { webhookUrl } : {}),
+      ...(webhookSecret !== undefined ? { webhookSecret } : {}),
+    })
+    .where(eq(publishers.id, pub.id))
+    .returning()
+    .then((rows) => rows[0]);
+
+  res.json({
+    webhookUrl: updated.webhookUrl,
+    webhookSecret: updated.webhookSecret ? maskSecret(updated.webhookSecret) : null,
+  });
+});
+
+// POST /publishers/me/webhooks/test — send a test webhook (authenticated)
+router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+
+  if (!pub.webhookUrl) {
+    res.status(400).json({ error: "No webhook URL configured" });
+    return;
+  }
+
+  const payload = {
+    event: "webhook.test",
+    publisherId: pub.id,
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    const response = await fetch(pub.webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(pub.webhookSecret ? { "X-Webhook-Secret": pub.webhookSecret } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    res.json({
+      delivered: response.ok,
+      status: response.status,
+    });
+  } catch (err: any) {
+    res.status(502).json({
+      delivered: false,
+      error: err.message ?? "Failed to deliver test webhook",
+    });
+  }
+});
+
 // GET /publishers/leaderboard — public creator leaderboard
 router.get("/publishers/leaderboard", async (_req, res) => {
   // Get all publishers with their resource and payment stats
@@ -209,5 +328,10 @@ router.get("/publishers/leaderboard", async (_req, res) => {
 
   res.json(leaderboard);
 });
+
+function maskSecret(secret: string): string {
+  if (secret.length <= 4) return "****";
+  return `${"*".repeat(secret.length - 4)}${secret.slice(-4)}`;
+}
 
 export default router;

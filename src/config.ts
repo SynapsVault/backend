@@ -115,6 +115,15 @@ const envSchema = z.object({
   RATE_LIMIT_PUBLISH_WALLET_MAX: z.coerce.number().default(10),
   RATE_LIMIT_PUBLISH_WALLET_WINDOW_MS: z.coerce.number().default(3_600_000),
 
+  // Publisher rate limiting defaults (per publisher, requests per minute).
+  PUBLISHER_RATE_LIMIT_RPM_DEFAULT: z.coerce.number().default(60),
+  PUBLISHER_RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
+  PUBLISHER_RATE_LIMIT_MAX_RPM: z.coerce.number().default(10_000),
+
+  // Webhook delivery
+  WEBHOOK_TIMEOUT_MS: z.coerce.number().default(10_000),
+  WEBHOOK_MAX_ATTEMPTS: z.coerce.number().default(3),
+
   // Optional Redis URL for a shared sliding-window rate-limit store (multi-instance).
   REDIS_URL: z.string().url().optional(),
 

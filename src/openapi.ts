@@ -19,6 +19,7 @@ export const openApiSpec = {
     { name: "Resources", description: "Resource publishing, browsing, and access" },
     { name: "Registry", description: "On-chain Soroban vault-registry" },
     { name: "Verify", description: "AI content originality verification (x402 paywalled)" },
+    { name: "Webhooks", description: "Publisher webhook subscription management" },
   ],
   components: {
     securitySchemes: {
@@ -234,6 +235,117 @@ export const openApiSpec = {
           networkPassphrase: { type: "string" },
         },
       },
+      PublisherRateLimit: {
+        type: "object",
+        description: "Current rate-limit quota and usage for the authenticated publisher.",
+        properties: {
+          limit: {
+            type: "integer",
+            description: "Maximum number of requests allowed in the current window.",
+            example: 100,
+          },
+          remaining: {
+            type: "integer",
+            description: "Requests remaining in the current window.",
+            example: 42,
+          },
+          resetAt: {
+            type: "string",
+            format: "date-time",
+            description: "When the current window resets.",
+          },
+          windowSeconds: {
+            type: "integer",
+            description: "Length of the rate-limit window in seconds.",
+            example: 60,
+          },
+        },
+        required: ["limit", "remaining", "resetAt", "windowSeconds"],
+      },
+      WebhookEventType: {
+        type: "string",
+        description: "Event types a webhook subscription can receive.",
+        enum: [
+          "resource.published",
+          "resource.delisted",
+          "resource.registered",
+          "resource.price_updated",
+          "resource.ownership_transferred",
+          "sale.completed",
+        ],
+      },
+      Webhook: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          url: { type: "string", format: "uri", description: "Delivery endpoint (HTTPS)." },
+          events: {
+            type: "array",
+            items: { $ref: "#/components/schemas/WebhookEventType" },
+            description: "Event types this subscription receives.",
+          },
+          active: { type: "boolean" },
+          secret: {
+            type: "string",
+            description:
+              "HMAC-SHA256 signing secret. Returned only on creation; use it to verify the X-SynapsVault-Signature header.",
+          },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+      },
+      WebhookCreateRequest: {
+        type: "object",
+        required: ["url", "events"],
+        properties: {
+          url: {
+            type: "string",
+            format: "uri",
+            description: "HTTPS endpoint that will receive POST deliveries.",
+            example: "https://example.com/webhooks/synapsvault",
+          },
+          events: {
+            type: "array",
+            minItems: 1,
+            items: { $ref: "#/components/schemas/WebhookEventType" },
+            description: "Event types to subscribe to.",
+          },
+          active: {
+            type: "boolean",
+            default: true,
+            description: "Whether the subscription is active immediately.",
+          },
+        },
+      },
+      WebhookUpdateRequest: {
+        type: "object",
+        properties: {
+          url: { type: "string", format: "uri" },
+          events: {
+            type: "array",
+            minItems: 1,
+            items: { $ref: "#/components/schemas/WebhookEventType" },
+          },
+          active: { type: "boolean" },
+        },
+      },
+      WebhookDelivery: {
+        type: "object",
+        description: "A single webhook delivery attempt.",
+        properties: {
+          id: { type: "string" },
+          webhookId: { type: "string" },
+          event: { $ref: "#/components/schemas/WebhookEventType" },
+          status: {
+            type: "string",
+            enum: ["pending", "success", "failed"],
+          },
+          responseStatus: { type: "integer", nullable: true },
+          attempts: { type: "integer" },
+          deliveredAt: { type: "string", format: "date-time", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
     },
   },
   paths: {
@@ -417,6 +529,34 @@ export const openApiSpec = {
         },
       },
     },
+    "/publishers/me/rate-limit": {
+      get: {
+        tags: ["Publishers"],
+        summary: "Get own publisher rate-limit quota and usage",
+        operationId: "getMyRateLimit",
+        security: [{ ApiKeyAuth: [] }],
+        responses: {
+          "200": {
+            description: "Current rate-limit status",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/PublisherRateLimit" },
+              },
+            },
+          },
+          "401": {
+            description: "Missing or invalid API key",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "429": {
+            description: "Rate limit exceeded",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/RateLimitError" } },
+            },
+          },
+        },
+      },
+    },
     "/publishers/leaderboard": {
       get: {
         tags: ["Publishers"],
@@ -446,6 +586,185 @@ export const openApiSpec = {
                 },
               },
             },
+          },
+        },
+      },
+    },
+
+    // ── Webhooks ────────────────────────────────────────────────────────────
+    "/publishers/me/webhooks": {
+      get: {
+        tags: ["Webhooks"],
+        summary: "List own webhook subscriptions",
+        operationId: "listWebhooks",
+        security: [{ ApiKeyAuth: [] }],
+        responses: {
+          "200": {
+            description: "Array of webhook subscriptions",
+            content: {
+              "application/json": {
+                schema: { type: "array", items: { $ref: "#/components/schemas/Webhook" } },
+              },
+            },
+          },
+          "401": {
+            description: "Missing or invalid API key",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+        },
+      },
+      post: {
+        tags: ["Webhooks"],
+        summary: "Create a webhook subscription",
+        operationId: "createWebhook",
+        security: [{ ApiKeyAuth: [], RequestSignature: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/WebhookCreateRequest" },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description:
+              "Webhook created. The signing secret is returned only in this response; " +
+              "store it to verify the X-SynapsVault-Signature header on deliveries.",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/Webhook" } },
+            },
+          },
+          "400": {
+            description: "Validation error",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "401": {
+            description: "Unauthorized",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "429": {
+            description: "Rate limit exceeded",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/RateLimitError" } },
+            },
+          },
+        },
+      },
+    },
+    "/publishers/me/webhooks/{id}": {
+      get: {
+        tags: ["Webhooks"],
+        summary: "Get a webhook subscription",
+        operationId: "getWebhook",
+        security: [{ ApiKeyAuth: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": {
+            description: "Webhook subscription",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/Webhook" } },
+            },
+          },
+          "401": {
+            description: "Unauthorized",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "404": {
+            description: "Not found or not owned",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+        },
+      },
+      patch: {
+        tags: ["Webhooks"],
+        summary: "Update a webhook subscription",
+        operationId: "updateWebhook",
+        security: [{ ApiKeyAuth: [], RequestSignature: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/WebhookUpdateRequest" },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Updated webhook subscription",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/Webhook" } },
+            },
+          },
+          "400": {
+            description: "Validation error",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "401": {
+            description: "Unauthorized",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "404": {
+            description: "Not found or not owned",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+        },
+      },
+      delete: {
+        tags: ["Webhooks"],
+        summary: "Delete a webhook subscription",
+        operationId: "deleteWebhook",
+        security: [{ ApiKeyAuth: [], RequestSignature: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "204": { description: "Webhook deleted" },
+          "401": {
+            description: "Unauthorized",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "404": {
+            description: "Not found or not owned",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+        },
+      },
+    },
+    "/publishers/me/webhooks/{id}/deliveries": {
+      get: {
+        tags: ["Webhooks"],
+        summary: "List recent delivery attempts for a webhook",
+        operationId: "listWebhookDeliveries",
+        security: [{ ApiKeyAuth: [] }],
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "limit",
+            in: "query",
+            required: false,
+            schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+            description: "Max number of deliveries to return (1-100, default 20).",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Array of delivery attempts, newest first",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "array",
+                  items: { $ref: "#/components/schemas/WebhookDelivery" },
+                },
+              },
+            },
+          },
+          "401": {
+            description: "Unauthorized",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "404": {
+            description: "Not found or not owned",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
         },
       },

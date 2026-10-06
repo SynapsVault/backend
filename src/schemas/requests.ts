@@ -1,4 +1,6 @@
 import { z } from "zod/v4";
+import { config } from "../config.js";
+import { webhookEventValues } from "./webhooks.js";
 
 export const publisherRegisterSchema = z
   .object({
@@ -73,6 +75,27 @@ export const CATALOG_DEFAULT_LIMIT = 20;
 export const CATALOG_MAX_LIMIT = 100;
 
 /** Query params for GET /resources (public catalog). */
+/** Body for PATCH /publishers/me/rate-limit (#rate-limit). */
+export const updateRateLimitSchema = z
+  .object({
+    rateLimitRpm: z
+      .number()
+      .int()
+      .min(1)
+      .max(config.PUBLISHER_RATE_LIMIT_MAX_RPM),
+  })
+  .strict();
+
+/** Body for PATCH /publishers/me/webhook (#webhook). */
+export const updateWebhookConfigSchema = z
+  .object({
+    webhookUrl: z.url().optional(),
+    webhookSecret: z.string().min(16).optional(),
+    webhookEvents: z.array(z.enum(webhookEventValues)).optional(),
+    webhookEnabled: z.boolean().optional(),
+  })
+  .strict();
+
 export const catalogQuerySchema = z
   .object({
     verificationStatus: z.enum(["verified", "pending", "rejected"]).optional(),
