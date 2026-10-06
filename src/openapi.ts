@@ -19,6 +19,9 @@ export const openApiSpec = {
     { name: "Resources", description: "Resource publishing, browsing, and access" },
     { name: "Registry", description: "On-chain Soroban vault-registry" },
     { name: "Verify", description: "AI content originality verification (x402 paywalled)" },
+    { name: "Payments", description: "Payment processing and settlement" },
+    { name: "Admin", description: "Administrative operations" },
+    { name: "Metrics", description: "Service metrics and observability" },
   ],
   components: {
     securitySchemes: {
@@ -41,6 +44,12 @@ export const openApiSpec = {
         in: "header",
         name: "X-Payment",
         description: "Base64-encoded x402 payment payload",
+      },
+      AdminKey: {
+        type: "apiKey",
+        in: "header",
+        name: "x-admin-key",
+        description: "Administrative API key required for admin endpoints",
       },
     },
     schemas: {

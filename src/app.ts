@@ -17,6 +17,7 @@ import verifyRouter from "./routes/verify.js";
 import paymentsRouter from "./routes/payments.js";
 import docsRouter from "./routes/docs.js";
 import metricsRouter from "./routes/metrics.js";
+import adminRouter from "./routes/admin.js";
 
 export function createApp(): Express {
   const app = express();
@@ -38,6 +39,7 @@ export function createApp(): Express {
   app.use(verifyRouter);
   app.use(paymentsRouter);
   app.use(metricsRouter);
+  app.use(adminRouter);
 
   // OpenAPI spec + Swagger UI (all envs; UI is CDN-based, no extra package needed)
   app.use(docsRouter);

@@ -4,9 +4,42 @@ import { openApiSpec } from "../openapi.js";
 const router: RouterType = Router();
 
 /**
- * GET /openapi.json — machine-readable OpenAPI 3.0 spec
+ * Validates that the OpenAPI spec object is well-formed enough to serve.
+ * Returns true when the spec looks usable, false otherwise.
+ */
+function isWellFormedSpec(spec: unknown): boolean {
+  if (!spec || typeof spec !== "object") return false;
+  const s = spec as Record<string, unknown>;
+  if (typeof s.openapi !== "string" || s.openapi.length === 0) return false;
+  if (!s.info || typeof s.info !== "object") return false;
+  if (!s.paths || typeof s.paths !== "object") return false;
+  return true;
+}
+
+/**
+ * GET /openapi.json — machine-readable OpenAPI 3.0 spec (canonical endpoint)
  */
 router.get("/openapi.json", (_req, res) => {
+  if (!isWellFormedSpec(openApiSpec)) {
+    res.status(500).json({
+      error: "OpenAPI spec is not well-formed",
+    });
+    return;
+  }
+  res.setHeader("Cache-Control", "public, max-age=300");
+  res.json(openApiSpec);
+});
+
+/**
+ * GET /docs/json — alias for the canonical OpenAPI spec endpoint
+ */
+router.get("/docs/json", (_req, res) => {
+  if (!isWellFormedSpec(openApiSpec)) {
+    res.status(500).json({
+      error: "OpenAPI spec is not well-formed",
+    });
+    return;
+  }
   res.setHeader("Cache-Control", "public, max-age=300");
   res.json(openApiSpec);
 });
