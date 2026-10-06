@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { publishers } from "../db/schema.js";
 import { hashApiKey } from "../utils/crypto.js";
+import { AppError } from "../utils/AppError.js";
 
 declare global {
   namespace Express {
@@ -16,8 +17,7 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
   const key = req.headers["x-api-key"];
 
   if (!key || typeof key !== "string") {
-    res.status(401).json({ error: "Missing x-api-key header" });
-    return;
+    throw new AppError("Missing x-api-key header", 401);
   }
 
   const hash = hashApiKey(key);
@@ -28,8 +28,7 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     .then((rows) => rows[0]);
 
   if (!publisher) {
-    res.status(401).json({ error: "Invalid API key" });
-    return;
+    throw new AppError("Invalid API key", 401);
   }
 
   req.publisher = publisher;

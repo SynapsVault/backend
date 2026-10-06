@@ -4,6 +4,7 @@ import { overallReadinessStatus } from "../lib/readiness.js";
 import { isAccepting } from "../lib/lifecycle.js";
 import { pgClient } from "../db/client.js";
 import { config } from "../config.js";
+import { AppError } from "../lib/errors.js";
 
 const router: RouterType = Router();
 
@@ -62,14 +63,8 @@ router.get("/debug/db", async (_req, res) => {
       publishers: pubCount[0].cnt,
       resources: resCount[0].cnt,
     });
-  } catch (err: any) {
-    res.status(500).json({
-      error: err.message,
-      code: err.code,
-      detail: err.detail,
-      hint: err.hint,
-      query: err.query,
-    });
+  } catch {
+    throw new AppError("INTERNAL_ERROR", "Database debug query failed");
   }
 });
 

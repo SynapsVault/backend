@@ -8,6 +8,7 @@ import { checkOriginality } from "../services/verificationService.js";
 
 import { config } from "../config.js";
 import { getLogger } from "../lib/logger.js";
+import { businessEventsTotal, verificationCostUsd } from "../lib/metrics.js";
 import { network, sharedX402ResourceServer } from "../lib/x402.js";
 import { verifyIpRateLimit, verifyWalletRateLimit } from "../middleware/rateLimiters.js";
 import { validate } from "../middleware/validate.js";
@@ -41,6 +42,13 @@ router.post(
 
     const result = await checkOriginality(content, "text");
     const { usage } = result;
+
+    // Record business metrics for the completed verification.
+    businessEventsTotal.inc({
+      event: "verification.completed",
+      outcome: result.isOriginal ? "original" : "not_original",
+    });
+    verificationCostUsd.observe(usage.estimatedCostUsd);
 
     // Structured usage log so verification spend is visible (#283). No content
     // or secrets are logged — only token counts and the estimated cost.

@@ -44,6 +44,7 @@ import {
   submitSignedTx,
 } from "../services/registryClient.js";
 import { parsePayerFromXPayment } from "../lib/parseXPayment.js";
+import { AppError } from "../lib/errors.js";
 
 const router: RouterType = Router();
 
@@ -71,8 +72,7 @@ router.post(
       if (existing) {
         if (existing.inProgress) {
           // A concurrent request with the same key is still running.
-          res.status(409).json({ error: "Idempotent request already in progress" });
-          return;
+          throw new AppError("CONFLICT", "Idempotent request already in progress");
         }
         res.status(existing.result.status).json(existing.result.body);
         return;
@@ -94,8 +94,9 @@ router.post(
           // Validation failures aren't a committed result — release the key so
           // a corrected retry can proceed.
           if (scopedKey) store.delete(scopedKey);
-          res.status(400).json({ error: parsed.error.format() });
-          return;
+          throw new AppError("VALIDATION_ERROR", "Invalid request body", {
+            detail: parsed.error.format(),
+          });
         }
 
         const { title, description, price, walletAddress } = parsed.data;
@@ -122,8 +123,9 @@ router.post(
       const parsed = linkPublishSchema.safeParse(req.body);
       if (!parsed.success) {
         if (scopedKey) store.delete(scopedKey);
-        res.status(400).json({ error: parsed.error.format() });
-        return;
+        throw new AppError("VALIDATION_ERROR", "Invalid request body", {
+          detail: parsed.error.format(),
+        });
       }
 
       const resource = await createLinkResource({
@@ -159,8 +161,10 @@ router.post(
 router.get("/resources", async (req, res) => {
   const parsed = catalogQuerySchema.safeParse(req.query);
   if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid query params" });
-    return;
+    throw new AppError(
+      "VALIDATION_ERROR",
+      parsed.error.issues[0]?.message ?? "Invalid query params",
+    );
   }
 
   const hasFilters = Object.values(parsed.data).some((v) => v !== undefined);
@@ -178,8 +182,11 @@ router.get("/resources", async (req, res) => {
     ]);
   } catch (err: any) {
     getLogger().error({ err, event: "catalog_error" }, "catalog query failed");
-    res.status(500).json({ error: err.message, code: err.code, detail: err.detail, hint: err.hint });
-    return;
+    throw new AppError("INTERNAL_ERROR", err.message, {
+      detail: err.detail,
+      hint: err.hint,
+      code: err.code,
+    });
   }
 
   const nextOffset = offset + catalog.length < total ? offset + catalog.length : null;
@@ -201,8 +208,7 @@ router.get("/resources", async (req, res) => {
 router.get("/resources/:id/meta", async (req, res) => {
   const meta = await getResourceMeta(req.params.id as string);
   if (!meta) {
-    res.status(404).json({ error: "Resource not found" });
-    return;
+    throw new AppError("NOT_FOUND", "Resource not found");
   }
   res.json({
     ...meta,
@@ -217,8 +223,7 @@ router.get("/resources/:id/meta", async (req, res) => {
 router.get("/resources/:id/verification", async (req, res) => {
   const details = await getVerificationDetails(req.params.id as string);
   if (!details) {
-    res.status(404).json({ error: "Resource not found" });
-    return;
+    throw new AppError("NOT_FOUND", "Resource not found");
   }
   res.json(details);
 });
@@ -227,8 +232,7 @@ router.get("/resources/:id/verification", async (req, res) => {
 router.get("/resources/:id/thumbnail", async (req, res) => {
   const resource = await getResourceById(req.params.id as string);
   if (!resource || !resource.storagePath || !resource.mimeType?.startsWith("image/")) {
-    res.status(404).json({ error: "Thumbnail not found" });
-    return;
+    throw new AppError("NOT_FOUND", "Thumbnail not found");
   }
 
   const filename = resource.storagePath.split("/").pop();
@@ -240,7 +244,7 @@ router.get("/resources/:id/thumbnail", async (req, res) => {
     res.setHeader("Cache-Control", "public, max-age=31536000");
     res.send(buffer);
   } catch (err) {
-    res.status(404).json({ error: "Thumbnail not found" });
+    throw new AppError("NOT_FOUND", "Thumbnail not found");
   }
 });
 
@@ -289,8 +293,7 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
 
   // Stream file from Supabase Storage
   if (!resource.storagePath) {
-    res.status(500).json({ error: "Resource file not found" });
-    return;
+    throw new AppError("INTERNAL_ERROR", "Resource file not found");
   }
 
   // Add receipt info in headers for file downloads
@@ -311,8 +314,7 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
 router.delete("/resources/:id", apiKeyAuth, requestSignatureAuth, async (req, res) => {
   const resource = await delistResource(req.params.id as string, req.publisher!.id);
   if (!resource) {
-    res.status(404).json({ error: "Resource not found or not owned by you" });
-    return;
+    throw new AppError("NOT_FOUND", "Resource not found or not owned by you");
   }
   res.json({ message: "Resource delisted", id: resource.id });
 });
@@ -324,20 +326,16 @@ router.get("/resources/:id/register/prepare", apiKeyAuth, async (req, res) => {
 
   const resource = await getResourceById(resourceId);
   if (!resource) {
-    res.status(404).json({ error: "Resource not found" });
-    return;
+    throw new AppError("NOT_FOUND", "Resource not found");
   }
   if (resource.publisherId !== publisher.id) {
-    res.status(403).json({ error: "Forbidden: you do not own this resource" });
-    return;
+    throw new AppError("FORBIDDEN", "Forbidden: you do not own this resource");
   }
   if (resource.verificationStatus !== "verified") {
-    res.status(400).json({ error: "Resource must be verified before registering on-chain" });
-    return;
+    throw new AppError("VALIDATION_ERROR", "Resource must be verified before registering on-chain");
   }
   if (resource.onchainStatus === "registered") {
-    res.status(409).json({ error: "Resource is already registered on-chain" });
-    return;
+    throw new AppError("CONFLICT", "Resource is already registered on-chain");
   }
 
   try {
@@ -367,7 +365,9 @@ router.get("/resources/:id/register/prepare", apiKeyAuth, async (req, res) => {
       },
     });
   } catch (err: any) {
-    res.status(500).json({ error: "Failed to build register transaction", detail: err?.message });
+    throw new AppError("UPSTREAM_ERROR", "Failed to build register transaction", {
+      detail: err?.message,
+    });
   }
 });
 
@@ -384,28 +384,25 @@ router.post(
 
     const resource = await getResourceById(resourceId);
     if (!resource) {
-      res.status(404).json({ error: "Resource not found" });
-      return;
+      throw new AppError("NOT_FOUND", "Resource not found");
     }
     if (resource.publisherId !== publisher.id) {
-      res.status(403).json({ error: "Forbidden: you do not own this resource" });
-      return;
+      throw new AppError("FORBIDDEN", "Forbidden: you do not own this resource");
     }
     if (resource.verificationStatus !== "verified") {
-      res.status(400).json({ error: "Resource must be verified before registering on-chain" });
-      return;
+      throw new AppError(
+        "VALIDATION_ERROR",
+        "Resource must be verified before registering on-chain",
+      );
     }
     if (resource.onchainStatus === "registered") {
-      res.status(409).json({
-        error: "Resource is already registered on-chain",
+      throw new AppError("CONFLICT", "Resource is already registered on-chain", {
         onchainTxHash: resource.onchainTxHash,
       });
-      return;
     }
     // "pending" means a registration is already in-flight — don't double-submit
     if (resource.onchainStatus === "pending") {
-      res.status(409).json({
-        error: "Registration already in progress",
+      throw new AppError("CONFLICT", "Registration already in progress", {
         message:
           "An on-chain registration for this resource is already pending. A background worker retries pending registrations automatically for a few minutes.",
         nextSteps: [
@@ -417,7 +414,6 @@ router.post(
         ],
         ...(resource.onchainTxHash ? { txHash: resource.onchainTxHash } : {}),
       });
-      return;
     }
     // "none" or "failed" → proceed (failed is retryable)
 
@@ -474,8 +470,7 @@ router.post(
             txHash: result.txHash,
             detail: result.error,
           });
-          res.status(502).json({
-            error: "On-chain registration failed",
+          throw new AppError("UPSTREAM_ERROR", "On-chain registration failed", {
             detail: result.error,
             txHash: result.txHash || undefined,
             ...guidance,
@@ -548,8 +543,7 @@ router.post(
         resourceId,
         detail: err?.message,
       });
-      res.status(502).json({
-        error: "On-chain registration failed",
+      throw new AppError("UPSTREAM_ERROR", "On-chain registration failed", {
         detail: err?.message,
         ...guidance,
       });
@@ -570,12 +564,10 @@ router.post(
 
     const resource = await getResourceById(resourceId);
     if (!resource) {
-      res.status(404).json({ error: "Resource not found" });
-      return;
+      throw new AppError("NOT_FOUND", "Resource not found");
     }
     if (resource.publisherId !== publisher.id) {
-      res.status(403).json({ error: "Forbidden: you do not own this resource" });
-      return;
+      throw new AppError("FORBIDDEN", "Forbidden: you do not own this resource");
     }
 
     const { price } = req.body;
@@ -597,12 +589,10 @@ router.post(
 
     const resource = await getResourceById(resourceId);
     if (!resource) {
-      res.status(404).json({ error: "Resource not found" });
-      return;
+      throw new AppError("NOT_FOUND", "Resource not found");
     }
     if (resource.publisherId !== publisher.id) {
-      res.status(403).json({ error: "Forbidden: you do not own this resource" });
-      return;
+      throw new AppError("FORBIDDEN", "Forbidden: you do not own this resource");
     }
 
     const { signedXdr, price } = req.body;
@@ -615,8 +605,9 @@ router.post(
     const sendResult = await rpcServer.sendTransaction(signedTx);
 
     if (sendResult.status !== "PENDING") {
-      res.status(502).json({ error: "Transaction rejected", detail: sendResult.status });
-      return;
+      throw new AppError("UPSTREAM_ERROR", "Transaction rejected", {
+        detail: sendResult.status,
+      });
     }
 
     // Poll for confirmation
@@ -630,13 +621,11 @@ router.post(
         break;
       }
       if (txResult.status === StellarRpc.Api.GetTransactionStatus.FAILED) {
-        res.status(502).json({ error: "Transaction failed on-chain" });
-        return;
+        throw new AppError("UPSTREAM_ERROR", "Transaction failed on-chain");
       }
     }
     if (!confirmed) {
-      res.status(504).json({ error: "Transaction confirmation timed out" });
-      return;
+      throw new AppError("UPSTREAM_ERROR", "Transaction confirmation timed out");
     }
 
     // Sync the DB price to match the on-chain value
@@ -662,12 +651,10 @@ router.post(
 
     const resource = await getResourceById(resourceId);
     if (!resource) {
-      res.status(404).json({ error: "Resource not found" });
-      return;
+      throw new AppError("NOT_FOUND", "Resource not found");
     }
     if (resource.publisherId !== publisher.id) {
-      res.status(403).json({ error: "Forbidden: you do not own this resource" });
-      return;
+      throw new AppError("FORBIDDEN", "Forbidden: you do not own this resource");
     }
 
     const { newCreator } = req.body;
@@ -689,12 +676,10 @@ router.post(
 
     const resource = await getResourceById(resourceId);
     if (!resource) {
-      res.status(404).json({ error: "Resource not found" });
-      return;
+      throw new AppError("NOT_FOUND", "Resource not found");
     }
     if (resource.publisherId !== publisher.id) {
-      res.status(403).json({ error: "Forbidden: you do not own this resource" });
-      return;
+      throw new AppError("FORBIDDEN", "Forbidden: you do not own this resource");
     }
 
     const { signedXdr, newCreator } = req.body;
@@ -706,8 +691,9 @@ router.post(
     const sendResult = await rpcServer.sendTransaction(signedTx);
 
     if (sendResult.status !== "PENDING") {
-      res.status(502).json({ error: "Transaction rejected", detail: sendResult.status });
-      return;
+      throw new AppError("UPSTREAM_ERROR", "Transaction rejected", {
+        detail: sendResult.status,
+      });
     }
 
     const txHash = sendResult.hash;
@@ -720,13 +706,11 @@ router.post(
         break;
       }
       if (txResult.status === StellarRpc.Api.GetTransactionStatus.FAILED) {
-        res.status(502).json({ error: "Transaction failed on-chain" });
-        return;
+        throw new AppError("UPSTREAM_ERROR", "Transaction failed on-chain");
       }
     }
     if (!confirmed) {
-      res.status(504).json({ error: "Transaction confirmation timed out" });
-      return;
+      throw new AppError("UPSTREAM_ERROR", "Transaction confirmation timed out");
     }
 
     const [updated] = await db

@@ -2,6 +2,7 @@ import { Router, type Router as RouterType } from "express";
 import { getLogger } from "../lib/logger.js";
 import { registryClient } from "../services/registryClient.js";
 import { config } from "../config.js";
+import { AppError } from "../lib/errors.js";
 
 const router: RouterType = Router();
 
@@ -21,10 +22,7 @@ router.get("/registry/status", async (_req, res) => {
     });
   } catch (err) {
     getLogger().error({ err, event: "registry_status_failed" }, "GET /registry/status failed");
-    res.status(503).json({
-      error: "registry_unavailable",
-      message: "Unable to fetch registry status. Please try again later.",
-    });
+    throw new AppError("UPSTREAM_ERROR", "Unable to fetch registry status. Please try again later.");
   }
 });
 

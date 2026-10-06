@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
+import { AppError } from "../utils/AppError.js";
 import {
   EMPTY_BODY_HASH,
   getRequestPath,
@@ -8,6 +9,31 @@ import {
   isTimestampWithinSkew,
   verifyRequestSignature,
 } from "../utils/requestSignature.js";
+
+/**
+ * In-memory replay-protection cache keyed by `${signature}:${timestamp}`.
+ * Entries expire after the signature skew window, after which the same
+ * signature+timestamp pair is no longer considered a replay.
+ */
+const seenSignatures = new Map<string, number>();
+
+function pruneSeenSignatures(now: number): void {
+  for (const [key, expiresAt] of seenSignatures) {
+    if (expiresAt <= now) {
+      seenSignatures.delete(key);
+    }
+  }
+}
+
+function isReplay(key: string, now: number): boolean {
+  pruneSeenSignatures(now);
+  const expiresAt = seenSignatures.get(key);
+  if (expiresAt !== undefined && expiresAt > now) {
+    return true;
+  }
+  seenSignatures.set(key, now + config.SIGNATURE_MAX_SKEW_MS);
+  return false;
+}
 
 declare global {
   namespace Express {
@@ -55,26 +81,29 @@ export function requestSignatureAuth(req: Request, res: Response, next: NextFunc
 
   const apiKey = req.headers["x-api-key"];
   if (typeof apiKey !== "string") {
-    res.status(401).json({ error: "Missing x-api-key header" });
-    return;
+    throw new AppError("UNAUTHORIZED", "Missing x-api-key header");
   }
 
   const timestampHeader = req.headers["x-timestamp"];
   const signatureHeader = req.headers["x-signature"];
 
   if (!timestampHeader || typeof timestampHeader !== "string") {
-    res.status(401).json({ error: "Missing X-Timestamp header" });
-    return;
+    throw new AppError("UNAUTHORIZED", "Missing X-Timestamp header");
   }
   if (!signatureHeader || typeof signatureHeader !== "string") {
-    res.status(401).json({ error: "Missing X-Signature header" });
-    return;
+    throw new AppError("UNAUTHORIZED", "Missing X-Signature header");
   }
 
   const timestampSeconds = Number(timestampHeader);
   if (!isTimestampWithinSkew(timestampSeconds, Date.now(), config.SIGNATURE_MAX_SKEW_MS)) {
-    res.status(401).json({ error: "Request timestamp outside allowed window" });
-    return;
+    throw new AppError("UNAUTHORIZED", "Request timestamp outside allowed window");
+  }
+
+  const nonceHeader = req.headers["x-nonce"];
+  const nonce = typeof nonceHeader === "string" ? nonceHeader : undefined;
+  const replayKey = `${signatureHeader}:${timestampHeader}${nonce ? `:${nonce}` : ""}`;
+  if (isReplay(replayKey, Date.now())) {
+    throw new AppError("UNAUTHORIZED", "Request signature has already been used");
   }
 
   const bodyHash = resolveBodyHash(req);
@@ -93,8 +122,7 @@ export function requestSignatureAuth(req: Request, res: Response, next: NextFunc
   });
 
   if (!valid) {
-    res.status(401).json({ error: "Invalid request signature" });
-    return;
+    throw new AppError("UNAUTHORIZED", "Invalid request signature");
   }
 
   next();

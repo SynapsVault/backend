@@ -2,7 +2,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { config } from "../config.js";
 import { rootLogger } from "../lib/logger.js";
-import { dbPoolTotal } from "../lib/metrics.js";
+import { dbPoolTotal, dbPoolIdle } from "../lib/metrics.js";
 import * as schema from "./schema.js";
 
 const dbUrl = config.DATABASE_URL.replace(/\?.*$/, "");
@@ -14,9 +14,12 @@ rootLogger.info({ url: sanitizedUrl, ssl: !isLocal }, "DB connecting");
 
 const client = postgres(dbUrl, {
   ssl: isLocal ? false : { rejectUnauthorized: false },
-  max: 3,
-  idle_timeout: 20,
-  connect_timeout: 30,
+  max: config.DB_POOL_MAX,
+  idle_timeout: config.DB_POOL_IDLE_TIMEOUT,
+  connect_timeout: config.DB_POOL_CONNECT_TIMEOUT,
+  connection: {
+    statement_timeout: config.DB_STATEMENT_TIMEOUT,
+  },
   transform: { undefined: null },
 });
 
@@ -40,7 +43,11 @@ let poolLogInterval: ReturnType<typeof setInterval> | undefined;
 export function startPoolMetrics(intervalMs = 30_000): void {
   if (poolLogInterval) return;
   poolLogInterval = setInterval(() => {
-    rootLogger.info({ event: "db_pool_stats" }, "DB pool stats");
+    const total = client.size;
+    const idle = client.idle;
+    dbPoolTotal.set(total);
+    dbPoolIdle.set(idle);
+    rootLogger.info({ event: "db_pool_stats", total, idle }, "DB pool stats");
   }, intervalMs);
   poolLogInterval.unref?.();
 }

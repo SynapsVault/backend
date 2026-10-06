@@ -8,15 +8,15 @@ import { db } from "../db/client.js";
 import { resources, publishers, payments } from "../db/schema.js";
 import { desc, count, eq } from "drizzle-orm";
 import { getLogger } from "../lib/logger.js";
+import { AppError, ErrorCode } from "../lib/errors.js";
 
 const router = Router();
 const log    = getLogger();
 
-function adminAuth(req: Request, res: Response, next: () => void) {
+function adminAuth(req: Request, _res: Response, next: () => void) {
   const key = req.headers["x-admin-key"];
   if (!key || key !== process.env.ADMIN_API_KEY) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
+    throw new AppError(ErrorCode.UNAUTHORIZED, "Unauthorized");
   }
   next();
 }
@@ -37,7 +37,7 @@ router.get("/admin/stats", adminAuth, async (_req, res) => {
     });
   } catch (err) {
     log.error({ err }, "admin stats error");
-    res.status(500).json({ error: "Internal server error" });
+    throw new AppError(ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -50,7 +50,7 @@ router.post("/admin/delist/:id", adminAuth, async (req, res) => {
     res.json({ success: true, id, delistedAt: new Date().toISOString() });
   } catch (err) {
     log.error({ err, id }, "admin delist error");
-    res.status(500).json({ error: "Internal server error" });
+    throw new AppError(ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -72,7 +72,7 @@ router.get("/admin/audit", adminAuth, async (req, res) => {
     res.json({ page, limit, entries: rows });
   } catch (err) {
     log.error({ err }, "admin audit error");
-    res.status(500).json({ error: "Internal server error" });
+    throw new AppError(ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
