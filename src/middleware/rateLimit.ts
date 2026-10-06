@@ -109,6 +109,33 @@ export function createWalletRateLimiter(
   });
 }
 
+export interface PublisherRateLimiterConfig {
+  PUBLISHER_RATE_LIMIT_RPM_DEFAULT: number;
+  PUBLISHER_RATE_LIMIT_MAX_RPM: number;
+}
+
+export function createPublisherRateLimiter(
+  store: RateLimitStore,
+  config: PublisherRateLimiterConfig,
+  windowMs: number = 60_000,
+  limiterName?: string,
+): RequestHandler {
+  return createRateLimiter({
+    store,
+    windowMs,
+    limiterName: limiterName ?? "publisher_rpm",
+    skip: (req) => !req.publisher,
+    max: config.PUBLISHER_RATE_LIMIT_RPM_DEFAULT,
+    keyGenerator: (req) => {
+      const publisher = req.publisher;
+      if (!publisher) {
+        return `publisher:ip:${clientIp(req)}`;
+      }
+      return `publisher:${publisher.id}`;
+    },
+  });
+}
+
 export function extractPayerFromPaymentHeader(req: Request): string | undefined {
   const header = req.headers["x-payment"];
   if (!header || typeof header !== "string") {

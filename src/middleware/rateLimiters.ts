@@ -1,6 +1,7 @@
 import {
   createIpRateLimiter,
   createWalletRateLimiter,
+  createPublisherRateLimiter,
   extractPayerFromPaymentHeader,
 } from "../middleware/rateLimit.js";
 import { config } from "../config.js";
@@ -41,4 +42,12 @@ export const publishWalletRateLimit: RequestHandler = createWalletRateLimiter(
   config.RATE_LIMIT_PUBLISH_WALLET_WINDOW_MS,
   (req) => req.publisher?.walletAddress,
   "publish_wallet",
+);
+
+export const publisherRateLimit: RequestHandler = createPublisherRateLimiter(
+  store,
+  "publisher",
+  config.RATE_LIMIT_PUBLISHER_MAX,
+  config.RATE_LIMIT_PUBLISHER_WINDOW_MS,
+  "publisher",
 );

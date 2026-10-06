@@ -35,6 +35,15 @@ export const publishers = pgTable("publishers", {
   email: text("email").notNull().unique(),
   walletAddress: text("wallet_address").notNull(),
   apiKeyHash: text("api_key_hash").notNull(),
+  // Per-publisher rate limit in requests per minute. Null means the global
+  // default applies.
+  rateLimitRpm: integer("rate_limit_rpm"),
+  // Webhook delivery configuration. Nullable so publishers can opt in later.
+  webhookUrl: text("webhook_url"),
+  webhookSecret: text("webhook_secret"),
+  // JSON-stringified array of enabled WebhookEvent values.
+  webhookEvents: text("webhook_events"),
+  webhookEnabled: boolean("webhook_enabled").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
