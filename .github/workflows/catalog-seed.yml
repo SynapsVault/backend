@@ -28,15 +28,15 @@ jobs:
       PORT: 3000
       DATABASE_URL: postgres://synapse:synapse@localhost:5432/synapsvault
       STELLAR_NETWORK: testnet
-      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
-      STELLAR_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
-      STELLAR_CONTRACT_VAULT_REGISTRY: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
-      STELLAR_CONTRACT_ACCESS_LEASE: CDQZBCEPN6RCJAQLEKB3ZRNLUZXDCCFMVIS6STZNAOEAQLXD3FUBNQGX
-      STELLAR_CONTRACT_SUBSCRIPTION: CCCE6Q6WHDICGMQWXXXMM6X7YDGK3BXU4JNQJNSIA6XQRC52MQL42CD6
+      PAY_TO: GDEJJLXV2CNHF5HEGX34MU4G6L4PRVUAGD4ANF77ZDYTQJKSDSDYVVI6
+      AGENT_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
+      REGISTRY_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
+      VAULT_REGISTRY_CONTRACT_ID: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
+      REGISTRY_CONTRACT_ID: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY || 'placeholder_for_ci' }}
       SUPABASE_URL: https://placeholder.supabase.co
-      SUPABASE_SERVICE_ROLE_KEY: placeholder_for_ci
+      SUPABASE_SERVICE_KEY: placeholder_for_ci
       ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-      STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
       ALLOWED_ORIGINS: "*"
 
     steps:
@@ -44,16 +44,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
-      - name: Run SQL migrations
-        run: |
-          for f in $(ls drizzle/*.sql | sort); do
-            PGPASSWORD=synapse psql -h 127.0.0.1 -U synapse -d synapsvault -f "$f" 2>&1 | tail -1 || true
-          done
+      - name: Run migrations
+        run: npm run db:migrate
       - name: Seed via SQL
         run: |
           PGPASSWORD=synapse psql -h 127.0.0.1 -U synapse -d synapsvault << 'SQL'
@@ -101,7 +98,7 @@ jobs:
           echo "=== END LOG ==="
           # Check if still running
           pgrep -f "node dist/index.js" && echo "Server process alive" || echo "Server process DIED"
-      - name: Verify catalog (if server alive)
+      - name: Verify catalog
         run: |
           CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "0")
           echo "Health HTTP status: $CODE"
@@ -119,9 +116,10 @@ jobs:
             curl -s http://localhost:3000/admin/stats -H "X-Admin-Key: $ADMIN_API_KEY"
             echo "::notice::Backend running - catalog verified"
           else
-            echo "Server not responding on :3000"
+            echo "::error::Server not responding on :3000"
             echo "Full server log:"
             cat /tmp/server.log || true
+            exit 1
           fi
       - name: Summary
         if: always()

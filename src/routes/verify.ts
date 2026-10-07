@@ -5,6 +5,7 @@ import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { resources, verifications } from "../db/schema.js";
 import { checkOriginality } from "../services/verificationService.js";
+import { emitToPublisher } from "../services/webhookService.js";
 
 import { config } from "../config.js";
 import { getLogger } from "../lib/logger.js";
@@ -48,7 +49,7 @@ router.post(
       event: "verification.completed",
       outcome: result.isOriginal ? "original" : "not_original",
     });
-    verificationCostUsd.observe(usage.estimatedCostUsd);
+    verificationCostUsd.inc(usage.estimatedCostUsd);
 
     // Structured usage log so verification spend is visible (#283). No content
     // or secrets are logged — only token counts and the estimated cost.
@@ -82,14 +83,22 @@ router.post(
         .returning();
 
       // Update resource status — listing is independent of on-chain registration
-      await db
+      const [updated] = await db
         .update(resources)
         .set({
           verificationStatus: result.isOriginal ? "verified" : "rejected",
           verificationId: verification.id,
           listed: result.isOriginal,
         })
-        .where(eq(resources.id, resourceId));
+        .where(eq(resources.id, resourceId))
+        .returning({ publisherId: resources.publisherId, title: resources.title });
+
+      if (updated && result.isOriginal) {
+        void emitToPublisher(updated.publisherId, "resource.listed", {
+          resourceId,
+          title: updated.title,
+        });
+      }
     }
 
     res.json(result);

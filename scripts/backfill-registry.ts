@@ -17,7 +17,8 @@
 import { eq, and, ne } from "drizzle-orm";
 import { db } from "../src/db/client.js";
 import { resources } from "../src/db/schema.js";
-import { registryClient, registryKeypair } from "../src/services/registryClient.js";
+import { contract } from "@stellar/stellar-sdk";
+import { NETWORK_PASSPHRASE, registryClient, registryKeypair } from "../src/services/registryClient.js";
 import { config } from "../src/config.js";
 
 interface BackfillStats {
@@ -110,7 +111,7 @@ async function main() {
         tags: [],
       });
 
-      await tx.signAndSend({ signer: registryKeypair });
+      await tx.signAndSend(contract.basicNodeSigner(registryKeypair, NETWORK_PASSPHRASE));
 
       // Update database status
       await db

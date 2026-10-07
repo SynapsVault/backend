@@ -6,26 +6,8 @@ collectDefaultMetrics({ register: metricsRegistry });
 
 // DB pool
 export const dbPoolTotal = new Gauge({
-  name: "db_pool_connections_total",
-  help: "Total open database connections in the pool",
-  registers: [metricsRegistry],
-});
-
-export const dbPoolIdle = new Gauge({
-  name: "db_pool_connections_idle",
-  help: "Idle database connections in the pool",
-  registers: [metricsRegistry],
-});
-
-export const dbPoolActive = new Gauge({
-  name: "db_pool_connections_active",
-  help: "Active database connections in the pool",
-  registers: [metricsRegistry],
-});
-
-export const dbPoolWaiting = new Gauge({
-  name: "db_pool_connections_waiting",
-  help: "Requests waiting for a database connection from the pool",
+  name: "db_pool_connections_max",
+  help: "Configured maximum database connections in the pool",
   registers: [metricsRegistry],
 });
 
@@ -50,7 +32,14 @@ export const httpErrorsTotal = new Counter({
 export const businessEventsTotal = new Counter({
   name: "business_events_total",
   help: "Total business events",
-  labelNames: ["event", "status"] as const,
+  labelNames: ["event", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+// Estimated AI verification spend (USD), from OpenRouter token usage.
+export const verificationCostUsd = new Counter({
+  name: "verification_cost_usd_total",
+  help: "Estimated cumulative cost of AI content verification in USD",
   registers: [metricsRegistry],
 });
 

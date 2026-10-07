@@ -20,6 +20,8 @@ vi.mock("../services/verificationService.js", () => ({
   checkOriginality: mockCheckOriginality,
 }));
 
+vi.mock("../services/webhookService.js", () => ({ emitToPublisher: vi.fn() }));
+
 vi.mock("../db/client.js", () => ({
   db: {
     insert: vi.fn(() => ({
@@ -29,7 +31,7 @@ vi.mock("../db/client.js", () => ({
     })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve()),
+        where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })),
       })),
     })),
     select: vi.fn(() => ({
@@ -67,11 +69,13 @@ vi.mock("../middleware/validate.js", () => ({
 }));
 
 import verifyRouter from "./verify.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 
 function createTestApp() {
   const app = express();
   app.use(express.json());
   app.use(verifyRouter);
+  app.use(errorHandler);
   return app;
 }
 

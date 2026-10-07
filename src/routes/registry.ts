@@ -22,7 +22,7 @@ router.get("/registry/status", async (_req, res) => {
     });
   } catch (err) {
     getLogger().error({ err, event: "registry_status_failed" }, "GET /registry/status failed");
-    throw new AppError("UPSTREAM_ERROR", "Unable to fetch registry status. Please try again later.");
+    throw new AppError("SERVICE_UNAVAILABLE", "Unable to fetch registry status. Please try again later.");
   }
 });
 

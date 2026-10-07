@@ -49,8 +49,11 @@ router.get("/health/ready", async (_req, res) => {
   });
 });
 
-// Debug DB endpoint
+// Debug DB endpoint — exposes schema details, so never served in production.
 router.get("/debug/db", async (_req, res) => {
+  if (config.NODE_ENV === "production") {
+    throw new AppError("NOT_FOUND", "Not found");
+  }
   try {
     // Use raw postgres client to avoid drizzle abstraction
     const result = await pgClient`SELECT current_database() as db, current_schema() as schema, version() as pg_version`;

@@ -19,7 +19,7 @@
     {
       "idx": 2,
       "version": "7",
-      "when": 1748339196000,
+      "when": 1775469568361,
       "tag": "0002_content_hash",
       "breakpoints": true
     },
@@ -54,8 +54,22 @@
     {
       "idx": 7,
       "version": "7",
-      "when": 1751241600000,
+      "when": 1780100000002,
       "tag": "0007_thumbnail_path",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1780200000000,
+      "tag": "0008_publisher_rate_limit_webhooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1780200000001,
+      "tag": "0009_onchain_tx_hash",
       "breakpoints": true
     }
   ]

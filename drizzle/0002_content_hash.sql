@@ -1,1 +1,1 @@
-ALTER TABLE "resources" ADD COLUMN "content_hash" text;
+ALTER TABLE "resources" ADD COLUMN IF NOT EXISTS "content_hash" text;

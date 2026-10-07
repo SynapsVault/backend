@@ -1,16 +1,24 @@
 import { Router, type Router as RouterType } from "express";
-import { AppError } from "../errors.js";
+import type { z } from "zod/v4";
+import { AppError } from "../lib/errors.js";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
-import { publisherRateLimit } from "../middleware/publisherRateLimit.js";
+import { publisherRateLimit } from "../middleware/rateLimiters.js";
 import { validate } from "../middleware/validate.js";
-import { publisherRegisterSchema } from "../schemas/requests.js";
+import {
+  publisherRegisterSchema,
+  updateRateLimitSchema,
+  updateWebhookConfigSchema,
+} from "../schemas/requests.js";
 import { registerPublisher, getPublisherResources } from "../services/publisherService.js";
+import { deliver, webhookUrlProblem } from "../services/webhookService.js";
 import { eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { publishers, resources, payments } from "../db/schema.js";
 import { config } from "../config.js";
 
 const router: RouterType = Router();
+
+type UpdateWebhookConfig = z.infer<typeof updateWebhookConfigSchema>;
 
 // POST /publishers — register a new publisher (public)
 router.post("/publishers", validate(publisherRegisterSchema), async (req, res) => {
@@ -25,8 +33,9 @@ router.post("/publishers", validate(publisherRegisterSchema), async (req, res) =
       createdAt: publisher.createdAt,
     });
   } catch (err: any) {
-    if (err.message?.includes("unique")) {
-      throw new AppError(409, "Email already registered");
+    // 23505 = unique_violation (drizzle wraps the driver error in `cause`).
+    if (err?.code === "23505" || err?.cause?.code === "23505" || err?.message?.includes("unique")) {
+      throw new AppError("CONFLICT", "Email already registered");
     }
     throw err;
   }
@@ -48,7 +57,7 @@ router.get("/publishers/wallet/:address", async (req, res) => {
     .then((rows) => rows[0] ?? null);
 
   if (!publisher) {
-    throw new AppError(404, "No publisher found for this wallet");
+    throw new AppError("NOT_FOUND", "No publisher found for this wallet");
   }
 
   res.json(publisher);
@@ -160,114 +169,92 @@ router.get("/publishers/me/analytics", apiKeyAuth, async (req, res) => {
   });
 });
 
-// GET /publishers/me/rate-limit — own rate limit settings (authenticated)
-router.get("/publishers/me/rate-limit", apiKeyAuth, publisherRateLimit, async (req, res) => {
-  const pub = req.publisher!;
-  res.json({
-    rateLimit: pub.rateLimit,
-    rateLimitWindowSeconds: pub.rateLimitWindowSeconds,
-  });
+// GET /publishers/me/rate-limit — effective per-publisher rate limit (authenticated)
+router.get("/publishers/me/rate-limit", apiKeyAuth, publisherRateLimit, (req, res) => {
+  res.json(rateLimitView(req.publisher!.rateLimitRpm));
 });
 
-// PUT /publishers/me/rate-limit — update own rate limit settings (authenticated)
-router.put("/publishers/me/rate-limit", apiKeyAuth, publisherRateLimit, async (req, res) => {
-  const pub = req.publisher!;
-  const { rateLimit, rateLimitWindowSeconds } = req.body ?? {};
+// PATCH /publishers/me/rate-limit — set or reset (null) own rate-limit override
+router.patch(
+  "/publishers/me/rate-limit",
+  apiKeyAuth,
+  publisherRateLimit,
+  validate(updateRateLimitSchema),
+  async (req, res) => {
+    const [updated] = await db
+      .update(publishers)
+      .set({ rateLimitRpm: req.body.rateLimitRpm })
+      .where(eq(publishers.id, req.publisher!.id))
+      .returning({ rateLimitRpm: publishers.rateLimitRpm });
 
-  if (rateLimit !== undefined && (typeof rateLimit !== "number" || rateLimit < 0)) {
-    throw new AppError(400, "rateLimit must be a non-negative number");
-  }
-  if (
-    rateLimitWindowSeconds !== undefined &&
-    (typeof rateLimitWindowSeconds !== "number" || rateLimitWindowSeconds <= 0)
-  ) {
-    throw new AppError(400, "rateLimitWindowSeconds must be a positive number");
-  }
+    res.json(rateLimitView(updated.rateLimitRpm));
+  },
+);
 
-  const updated = await db
-    .update(publishers)
-    .set({
-      ...(rateLimit !== undefined ? { rateLimit } : {}),
-      ...(rateLimitWindowSeconds !== undefined ? { rateLimitWindowSeconds } : {}),
-    })
-    .where(eq(publishers.id, pub.id))
-    .returning()
-    .then((rows) => rows[0]);
-
-  res.json({
-    rateLimit: updated.rateLimit,
-    rateLimitWindowSeconds: updated.rateLimitWindowSeconds,
-  });
+// GET /publishers/me/webhooks — own webhook configuration (authenticated)
+router.get("/publishers/me/webhooks", apiKeyAuth, publisherRateLimit, (req, res) => {
+  res.json(webhookView(req.publisher!));
 });
 
-// GET /publishers/me/webhooks — own webhook settings (authenticated)
-router.get("/publishers/me/webhooks", apiKeyAuth, publisherRateLimit, async (req, res) => {
-  const pub = req.publisher!;
-  res.json({
-    webhookUrl: pub.webhookUrl,
-    webhookSecret: pub.webhookSecret ? maskSecret(pub.webhookSecret) : null,
-  });
-});
+// PATCH /publishers/me/webhooks — update own webhook configuration (authenticated)
+router.patch(
+  "/publishers/me/webhooks",
+  apiKeyAuth,
+  publisherRateLimit,
+  validate(updateWebhookConfigSchema),
+  async (req, res) => {
+    const pub = req.publisher!;
+    const body = req.body as UpdateWebhookConfig;
 
-// PUT /publishers/me/webhooks — update own webhook settings (authenticated)
-router.put("/publishers/me/webhooks", apiKeyAuth, publisherRateLimit, async (req, res) => {
-  const pub = req.publisher!;
-  const { webhookUrl, webhookSecret } = req.body ?? {};
+    if (body.webhookUrl) {
+      const problem = webhookUrlProblem(body.webhookUrl);
+      if (problem) throw new AppError("VALIDATION_ERROR", problem);
+    }
+    const nextUrl = body.webhookUrl !== undefined ? body.webhookUrl : pub.webhookUrl;
+    if (body.webhookEnabled && !nextUrl) {
+      throw new AppError("VALIDATION_ERROR", "webhookUrl is required to enable webhooks");
+    }
 
-  if (webhookUrl !== undefined && webhookUrl !== null && typeof webhookUrl !== "string") {
-    throw new AppError(400, "webhookUrl must be a string or null");
-  }
-  if (webhookSecret !== undefined && webhookSecret !== null && typeof webhookSecret !== "string") {
-    throw new AppError(400, "webhookSecret must be a string or null");
-  }
+    const [updated] = await db
+      .update(publishers)
+      .set({
+        ...(body.webhookUrl !== undefined ? { webhookUrl: body.webhookUrl } : {}),
+        ...(body.webhookSecret !== undefined ? { webhookSecret: body.webhookSecret } : {}),
+        ...(body.webhookEvents !== undefined ? { webhookEvents: body.webhookEvents } : {}),
+        // Clearing the URL always disables delivery.
+        ...(body.webhookUrl === null
+          ? { webhookEnabled: false }
+          : body.webhookEnabled !== undefined
+            ? { webhookEnabled: body.webhookEnabled }
+            : {}),
+      })
+      .where(eq(publishers.id, pub.id))
+      .returning();
 
-  const updated = await db
-    .update(publishers)
-    .set({
-      ...(webhookUrl !== undefined ? { webhookUrl } : {}),
-      ...(webhookSecret !== undefined ? { webhookSecret } : {}),
-    })
-    .where(eq(publishers.id, pub.id))
-    .returning()
-    .then((rows) => rows[0]);
+    res.json(webhookView(updated));
+  },
+);
 
-  res.json({
-    webhookUrl: updated.webhookUrl,
-    webhookSecret: updated.webhookSecret ? maskSecret(updated.webhookSecret) : null,
-  });
-});
-
-// POST /publishers/me/webhooks/test — send a test webhook (authenticated)
+// POST /publishers/me/webhooks/test — send a signed test event (authenticated)
 router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, async (req, res) => {
   const pub = req.publisher!;
 
   if (!pub.webhookUrl) {
-    throw new AppError(400, "No webhook URL configured");
+    throw new AppError("VALIDATION_ERROR", "No webhook URL configured");
   }
 
-  const payload = {
-    event: "webhook.test",
-    publisherId: pub.id,
-    timestamp: new Date().toISOString(),
-  };
+  // Single attempt: the caller is waiting on this request.
+  const result = await deliver(
+    { url: pub.webhookUrl, secret: pub.webhookSecret ?? undefined },
+    {
+      event: "webhook.test",
+      timestamp: new Date().toISOString(),
+      data: { publisherId: pub.id },
+    },
+    { maxAttempts: 1 },
+  );
 
-  try {
-    const response = await fetch(pub.webhookUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(pub.webhookSecret ? { "X-Webhook-Secret": pub.webhookSecret } : {}),
-      },
-      body: JSON.stringify(payload),
-    });
-
-    res.json({
-      delivered: response.ok,
-      status: response.status,
-    });
-  } catch (err: any) {
-    throw new AppError(502, err.message ?? "Failed to deliver test webhook");
-  }
+  res.status(result.delivered ? 200 : 502).json(result);
 });
 
 // GET /publishers/leaderboard — public creator leaderboard
@@ -319,6 +306,30 @@ router.get("/publishers/leaderboard", async (_req, res) => {
 
   res.json(leaderboard);
 });
+
+type Publisher = typeof publishers.$inferSelect;
+
+function rateLimitView(override: number | null) {
+  return {
+    rateLimitRpm: Math.min(
+      override ?? config.PUBLISHER_RATE_LIMIT_RPM_DEFAULT,
+      config.PUBLISHER_RATE_LIMIT_MAX_RPM,
+    ),
+    override,
+    defaultRpm: config.PUBLISHER_RATE_LIMIT_RPM_DEFAULT,
+    maxRpm: config.PUBLISHER_RATE_LIMIT_MAX_RPM,
+    windowMs: config.PUBLISHER_RATE_LIMIT_WINDOW_MS,
+  };
+}
+
+function webhookView(pub: Publisher) {
+  return {
+    webhookUrl: pub.webhookUrl,
+    webhookSecret: pub.webhookSecret ? maskSecret(pub.webhookSecret) : null,
+    webhookEvents: pub.webhookEvents ?? [],
+    webhookEnabled: pub.webhookEnabled,
+  };
+}
 
 function maskSecret(secret: string): string {
   if (secret.length <= 4) return "****";

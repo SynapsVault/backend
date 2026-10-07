@@ -52,10 +52,12 @@ vi.mock("drizzle-orm", async (importOriginal) => {
     ...actual,
     inArray: (column: unknown, values: unknown[]) => {
       lastResourceIdsArg = values;
-      return actual.inArray(column, values);
+      return actual.inArray(column as never, values);
     },
   };
 });
+
+vi.mock("../services/webhookService.js", () => ({ emitToPublisher: vi.fn() }));
 
 vi.mock("../db/client.js", () => ({
   db: {
@@ -108,11 +110,13 @@ vi.mock("../services/verificationService.js", () => ({
 }));
 
 import verifyRouter from "./verify.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 
 function createTestApp() {
   const app = express();
   app.use(express.json());
   app.use(verifyRouter);
+  app.use(errorHandler);
   return app;
 }
 

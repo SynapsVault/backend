@@ -36,6 +36,17 @@ function invalidateReads(resourceId?: string): void {
   if (resourceId) readCache.delete(metaKey(resourceId));
 }
 
+/** Admin moderation delist (any publisher). Returns null when the id is unknown. */
+export async function adminDelistResource(id: string) {
+  const [resource] = await db
+    .update(resources)
+    .set({ listed: false })
+    .where(eq(resources.id, id))
+    .returning({ id: resources.id });
+  if (resource) invalidateReads(resource.id);
+  return resource ?? null;
+}
+
 /** Test helper — clear the read caches between cases. */
 export function __resetCatalogCache(): void {
   readCache.clear();

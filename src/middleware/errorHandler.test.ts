@@ -1,99 +1,68 @@
-import { Request, Response, NextFunction } from 'express';
-import { errorHandler } from './errorHandler';
-import { AppError } from '../errors/AppError';
+import { describe, it, expect, vi } from "vitest";
+import express from "express";
+import request from "supertest";
 
-describe('errorHandler', () => {
-  let req: Partial<Request>;
-  let res: Partial<Response>;
-  let next: NextFunction;
-  let jsonMock: jest.Mock;
-  let statusMock: jest.Mock;
+vi.mock("../lib/sentry.js", () => ({ captureServerException: vi.fn() }));
 
-  beforeEach(() => {
-    jsonMock = jest.fn();
-    statusMock = jest.fn().mockReturnValue({ json: jsonMock });
-    req = {
-      requestId: 'test-request-id',
-    } as Partial<Request>;
-    res = {
-      status: statusMock,
-      json: jsonMock,
-    } as Partial<Response>;
-    next = jest.fn();
+import { errorHandler, notFoundHandler } from "./errorHandler.js";
+import { AppError } from "../lib/errors.js";
+import { captureServerException } from "../lib/sentry.js";
+import { runWithRequestContext } from "../lib/logger.js";
+
+function buildApp(thrower: () => unknown) {
+  const app = express();
+  app.use((_req, _res, next) => runWithRequestContext("req-123", () => next()));
+  app.use(express.json());
+  app.get("/boom", async () => {
+    throw thrower();
+  });
+  app.post("/json", (_req, res) => {
+    res.json({ ok: true });
+  });
+  app.use(notFoundHandler);
+  app.use(errorHandler);
+  return app;
+}
+
+describe("errorHandler", () => {
+  it("maps AppError to its status, code and message", async () => {
+    const res = await request(buildApp(() => new AppError("NOT_FOUND", "Resource not found"))).get("/boom");
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Resource not found", code: "NOT_FOUND", requestId: "req-123" });
   });
 
-  it('maps AppError to the correct status code and response shape', () => {
-    const error = new AppError('Not found', 404);
-
-    errorHandler(error, req as Request, res as Response, next);
-
-    expect(statusMock).toHaveBeenCalledWith(404);
-    expect(jsonMock).toHaveBeenCalledWith({
-      error: {
-        message: 'Not found',
-        statusCode: 404,
-        requestId: 'test-request-id',
-      },
-    });
+  it("includes details when provided", async () => {
+    const res = await request(
+      buildApp(() => new AppError("VALIDATION_ERROR", "Invalid request body", { field: "title" })),
+    ).get("/boom");
+    expect(res.status).toBe(400);
+    expect(res.body.details).toEqual({ field: "title" });
   });
 
-  it('maps AppError with a 400 status code correctly', () => {
-    const error = new AppError('Bad request', 400);
-
-    errorHandler(error, req as Request, res as Response, next);
-
-    expect(statusMock).toHaveBeenCalledWith(400);
-    expect(jsonMock).toHaveBeenCalledWith({
-      error: {
-        message: 'Bad request',
-        statusCode: 400,
-        requestId: 'test-request-id',
-      },
-    });
+  it("hides the message of unexpected errors and reports them", async () => {
+    const res = await request(buildApp(() => new Error("db password leaked"))).get("/boom");
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: "Internal server error", code: "INTERNAL_ERROR", requestId: "req-123" });
+    expect(captureServerException).toHaveBeenCalled();
   });
 
-  it('returns 500 for unknown errors', () => {
-    const error = new Error('Something went wrong');
-
-    errorHandler(error, req as Request, res as Response, next);
-
-    expect(statusMock).toHaveBeenCalledWith(500);
-    expect(jsonMock).toHaveBeenCalledWith({
-      error: {
-        message: 'Internal server error',
-        statusCode: 500,
-        requestId: 'test-request-id',
-      },
-    });
+  it("uses upstream timeout status codes", async () => {
+    const res = await request(buildApp(() => new AppError("GATEWAY_TIMEOUT", "timed out"))).get("/boom");
+    expect(res.status).toBe(504);
   });
 
-  it('includes the requestId in the response', () => {
-    const error = new AppError('Forbidden', 403);
-
-    errorHandler(error, req as Request, res as Response, next);
-
-    expect(jsonMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: expect.objectContaining({
-          requestId: 'test-request-id',
-        }),
-      }),
-    );
+  it("returns 400 for malformed JSON bodies", async () => {
+    const res = await request(buildApp(() => null))
+      .post("/json")
+      .set("Content-Type", "application/json")
+      .send("{not json");
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_ERROR");
   });
 
-  it('handles a missing requestId gracefully', () => {
-    req = {} as Partial<Request>;
-    const error = new AppError('Unauthorized', 401);
-
-    errorHandler(error, req as Request, res as Response, next);
-
-    expect(statusMock).toHaveBeenCalledWith(401);
-    expect(jsonMock).toHaveBeenCalledWith({
-      error: {
-        message: 'Unauthorized',
-        statusCode: 401,
-        requestId: undefined,
-      },
-    });
+  it("returns a JSON 404 for unknown routes", async () => {
+    const res = await request(buildApp(() => null)).get("/nope");
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ code: "NOT_FOUND", error: "Route GET /nope not found" });
   });
 });

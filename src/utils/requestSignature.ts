@@ -95,38 +95,3 @@ export function isTimestampWithinSkew(
   const requestMs = timestampSeconds * 1000;
   return Math.abs(nowMs - requestMs) <= maxSkewMs;
 }
-
-/**
- * Bounded TTL cache of recently seen signatures/nonces used for replay
- * protection. Entries older than the TTL are pruned on access.
- */
-const seenNonces = new Map<string, number>();
-
-function pruneExpiredNonces(nowMs: number, ttlMs: number): void {
-  for (const [key, recordedAt] of seenNonces) {
-    if (nowMs - recordedAt >= ttlMs) {
-      seenNonces.delete(key);
-    }
-  }
-}
-
-/**
- * Records a signature/nonce and reports whether it is fresh. Returns `true`
- * when the signature has not been seen within `ttlMs` (and records it);
- * returns `false` for a duplicate within the TTL window (replay).
- */
-export function checkAndRecordNonce(
-  signature: string,
-  ttlMs: number,
-  nowMs: number = Date.now(),
-): boolean {
-  if (!signature || !Number.isFinite(ttlMs) || ttlMs <= 0) {
-    return false;
-  }
-  pruneExpiredNonces(nowMs, ttlMs);
-  if (seenNonces.has(signature)) {
-    return false;
-  }
-  seenNonces.set(signature, nowMs);
-  return true;
-}

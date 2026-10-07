@@ -1,61 +1,60 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  businessEvents,
-  errorCounters,
-  requestDuration,
-  recordBusinessEvent,
-  recordError,
-} from './metrics';
+import { describe, it, expect, beforeEach } from "vitest";
+import express from "express";
+import request from "supertest";
+import { businessEventsTotal, httpErrorsTotal, metricsRegistry } from "./metrics.js";
+import { requestDurationMiddleware } from "../middleware/requestDuration.js";
 
-describe('metrics', () => {
+async function counterValue(name: string, labels: Record<string, string>): Promise<number> {
+  const metric = await metricsRegistry.getSingleMetric(name)?.get();
+  const match = metric?.values.find((v) =>
+    Object.entries(labels).every(([k, val]) => v.labels[k] === val),
+  );
+  return match?.value ?? 0;
+}
+
+describe("metrics", () => {
   beforeEach(() => {
-    businessEvents.clear();
-    errorCounters.clear();
+    businessEventsTotal.reset();
+    httpErrorsTotal.reset();
   });
 
-  it('increments business event counters', () => {
-    recordBusinessEvent('user_signup');
-    recordBusinessEvent('user_signup');
-    recordBusinessEvent('order_created');
+  it("increments business event counters by label", async () => {
+    businessEventsTotal.inc({ event: "verification.completed", outcome: "original" });
+    businessEventsTotal.inc({ event: "verification.completed", outcome: "original" });
+    businessEventsTotal.inc({ event: "verification.completed", outcome: "not_original" });
 
-    expect(businessEvents.get('user_signup')).toBe(2);
-    expect(businessEvents.get('order_created')).toBe(1);
+    expect(
+      await counterValue("business_events_total", { event: "verification.completed", outcome: "original" }),
+    ).toBe(2);
+    expect(
+      await counterValue("business_events_total", { outcome: "not_original" }),
+    ).toBe(1);
   });
 
-  it('records error counters', () => {
-    recordError('validation_error');
-    recordError('validation_error');
-    recordError('server_error');
+  it("records HTTP errors with the matched route pattern", async () => {
+    const app = express();
+    app.use(requestDurationMiddleware);
+    app.get("/items/:id", (_req, res) => {
+      res.status(404).json({ error: "nope" });
+    });
 
-    expect(errorCounters.get('validation_error')).toBe(2);
-    expect(errorCounters.get('server_error')).toBe(1);
+    await request(app).get("/items/42");
+
+    expect(
+      await counterValue("http_errors_total", { route: "/items/:id", status_code: "404" }),
+    ).toBe(1);
   });
 
-  it('records error counters via requestDuration middleware', async () => {
-    const middleware = requestDuration();
+  it("does not record an error for successful requests", async () => {
+    const app = express();
+    app.use(requestDurationMiddleware);
+    app.get("/ok", (_req, res) => {
+      res.json({ ok: true });
+    });
 
-    const req = {} as never;
-    const res = {} as never;
-    const next = () => {
-      throw new Error('boom');
-    };
+    await request(app).get("/ok");
 
-    await expect(
-      middleware(req, res, next),
-    ).rejects.toThrow('boom');
-
-    expect(errorCounters.get('request_error')).toBe(1);
-  });
-
-  it('does not record an error when middleware succeeds', async () => {
-    const middleware = requestDuration();
-
-    const req = {} as never;
-    const res = {} as never;
-    const next = () => undefined;
-
-    await middleware(req, res, next);
-
-    expect(errorCounters.get('request_error')).toBeUndefined();
+    const metric = await metricsRegistry.getSingleMetric("http_errors_total")?.get();
+    expect(metric?.values ?? []).toHaveLength(0);
   });
 });

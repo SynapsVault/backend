@@ -93,26 +93,24 @@ describe("createTtlCache", () => {
   });
 
   describe("metrics (#284)", () => {
-    it("increments cache_hits_total on get() hit", () => {
+    async function counterValue(counter: typeof cacheHits, cache: string): Promise<number | undefined> {
+      return (await counter.get()).values.find((v) => v.labels.cache === cache)?.value;
+    }
+
+    it("increments cache_hits_total on get() hit", async () => {
       const cache = createTtlCache<string>({ defaultTtlMs: 1000, cacheName: "test" });
       cache.set("k", "v");
       cache.get("k");
-      expect(cacheHits.hashMap["cache:test,"]).toEqual({
-        value: 1,
-        labels: { cache: "test" },
-      });
+      expect(await counterValue(cacheHits, "test")).toBe(1);
     });
 
-    it("increments cache_misses_total on get() miss", () => {
+    it("increments cache_misses_total on get() miss", async () => {
       const cache = createTtlCache<string>({ defaultTtlMs: 1000, cacheName: "test" });
       cache.get("nonexistent");
-      expect(cacheMisses.hashMap["cache:test,"]).toEqual({
-        value: 1,
-        labels: { cache: "test" },
-      });
+      expect(await counterValue(cacheMisses, "test")).toBe(1);
     });
 
-    it("increments cache_misses_total on expired entry", () => {
+    it("increments cache_misses_total on expired entry", async () => {
       const clock = fakeClock();
       const cache = createTtlCache<string>({
         defaultTtlMs: 100,
@@ -122,19 +120,16 @@ describe("createTtlCache", () => {
       cache.set("k", "v");
       clock.advance(100);
       cache.get("k");
-      expect(cacheMisses.hashMap["cache:test,"]).toEqual({
-        value: 1,
-        labels: { cache: "test" },
-      });
+      expect(await counterValue(cacheMisses, "test")).toBe(1);
     });
 
-    it("does not register metrics when cacheName is omitted", () => {
+    it("does not register metrics when cacheName is omitted", async () => {
       const cache = createTtlCache<string>({ defaultTtlMs: 1000 });
       cache.set("k", "v");
       cache.get("k");
       cache.get("missing");
-      expect(Object.keys(cacheHits.hashMap)).toHaveLength(0);
-      expect(Object.keys(cacheMisses.hashMap)).toHaveLength(0);
+      expect((await cacheHits.get()).values).toHaveLength(0);
+      expect((await cacheMisses.get()).values).toHaveLength(0);
     });
   });
 });

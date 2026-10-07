@@ -8,12 +8,20 @@ vi.mock("../config.js", () => ({
   },
 }));
 
-import { requestSignatureAuth } from "./requestSignatureAuth.js";
+import { __resetSignatureReplayCache, requestSignatureAuth } from "./requestSignatureAuth.js";
 import {
   EMPTY_BODY_HASH,
   hashRequestBody,
   signPublisherRequest,
 } from "../utils/requestSignature.js";
+import { AppError } from "../lib/errors.js";
+
+function expectRejected(next: NextFunction, message: string) {
+  expect(next).toHaveBeenCalledOnce();
+  const err = (next as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
+  expect(err).toBeInstanceOf(AppError);
+  expect(err).toMatchObject({ status: 401, code: "UNAUTHORIZED", message });
+}
 
 function mockResponse() {
   const res = {
@@ -46,6 +54,7 @@ describe("requestSignatureAuth", () => {
   });
 
   beforeEach(() => {
+    __resetSignatureReplayCache();
     vi.useFakeTimers();
     vi.setSystemTime(new Date(Number(timestamp) * 1000));
   });
@@ -69,7 +78,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledWith();
   });
 
   it("rejects a stale timestamp", () => {
@@ -88,9 +97,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: "Request timestamp outside allowed window" });
+    expectRejected(next, "Request timestamp outside allowed window");
   });
 
   it("rejects a tampered body", () => {
@@ -108,9 +115,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: "Invalid request signature" });
+    expectRejected(next, "Invalid request signature");
   });
 
   it("accepts DELETE with empty body hash", () => {
@@ -135,7 +140,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledWith();
   });
 
   it("rejects a replayed request with the same signature", () => {
@@ -154,14 +159,31 @@ describe("requestSignatureAuth", () => {
     const firstRes = mockResponse();
     const firstNext = vi.fn() as NextFunction;
     requestSignatureAuth(makeReq(), firstRes, firstNext);
-    expect(firstNext).toHaveBeenCalledOnce();
+    expect(firstNext).toHaveBeenCalledWith();
 
     const secondRes = mockResponse();
     const secondNext = vi.fn() as NextFunction;
     requestSignatureAuth(makeReq(), secondRes, secondNext);
-    expect(secondNext).not.toHaveBeenCalled();
-    expect(secondRes.statusCode).toBe(401);
-    expect(secondRes.body).toEqual({ error: "Request signature already used" });
+    expectRejected(secondNext, "Request signature already used");
+  });
+
+  it("does not record replays for invalid signatures", () => {
+    const makeReq = (sig: string) =>
+      ({
+        method: "POST",
+        originalUrl: path,
+        headers: { "x-api-key": secret, "x-timestamp": timestamp, "x-signature": sig },
+        rawBody: Buffer.from(JSON.stringify({ signedXdr: "CCCC" }), "utf8"),
+      }) as unknown as Request;
+    const forged = "ab".repeat(32);
+
+    const first = vi.fn() as NextFunction;
+    requestSignatureAuth(makeReq(forged), mockResponse(), first);
+    expectRejected(first, "Invalid request signature");
+
+    const second = vi.fn() as NextFunction;
+    requestSignatureAuth(makeReq(forged), mockResponse(), second);
+    expectRejected(second, "Invalid request signature");
   });
 
   it("rejects a request with a missing signature header", () => {
@@ -178,9 +200,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: "Missing request signature headers" });
+    expectRejected(next, "Missing request signature headers");
   });
 
   it("rejects a request with a missing timestamp header", () => {
@@ -197,9 +217,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: "Missing request signature headers" });
+    expectRejected(next, "Missing request signature headers");
   });
 
   it("rejects a request with a non-numeric timestamp", () => {
@@ -217,9 +235,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: "Invalid request timestamp" });
+    expectRejected(next, "Invalid request timestamp");
   });
 
   it("rejects a request signed with the wrong secret", () => {
@@ -244,9 +260,7 @@ describe("requestSignatureAuth", () => {
     const next = vi.fn() as NextFunction;
 
     requestSignatureAuth(req, res, next);
-    expect(next).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(401);
-    expect(res.body).toEqual({ error: "Invalid request signature" });
+    expectRejected(next, "Invalid request signature");
   });
 });
 
@@ -268,6 +282,6 @@ describe("requestSignatureAuth disabled", () => {
     const next = vi.fn() as NextFunction;
 
     disabledAuth(req, res, next);
-    expect(next).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledWith();
   });
 });

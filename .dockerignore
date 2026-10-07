@@ -1,8 +1,11 @@
 node_modules
 dist
+coverage
 .git
+.github
 *.log
 .env
 .env.*
-coverage
+!.env.example
 .DS_Store
+**/*.test.ts

@@ -1,233 +1,91 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Request, Response, NextFunction } from 'express';
-import { createPublisherRateLimiter } from './rateLimit.publisher';
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import express, { type Request, type Response, type NextFunction } from "express";
+import request from "supertest";
 
-interface MockStore {
-  incr: ReturnType<typeof vi.fn>;
-  expire: ReturnType<typeof vi.fn>;
-  ttl: ReturnType<typeof vi.fn>;
+vi.mock("../lib/logger.js", () => ({
+  getRequestId: () => undefined,
+  getLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }),
+}));
+
+import { createPublisherRateLimiter } from "./rateLimit.js";
+import { MemorySlidingWindowStore } from "../lib/rateLimit/stores.js";
+import type { RateLimitStore } from "../lib/rateLimit/types.js";
+
+type Pub = { id: string; rateLimitRpm: number | null };
+
+function buildApp(store: RateLimitStore, opts: { defaultRpm: number; maxRpm: number }) {
+  const app = express();
+  // Stand-in for apiKeyAuth: publisher id/override come from test headers.
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    const id = req.headers["x-test-publisher"];
+    if (typeof id === "string") {
+      const rpm = req.headers["x-test-rpm"];
+      req.publisher = { id, rateLimitRpm: rpm ? Number(rpm) : null } as Pub as Request["publisher"];
+    }
+    next();
+  });
+  app.use(createPublisherRateLimiter({ store, windowMs: 60_000, ...opts }));
+  app.get("/", (_req, res) => {
+    res.json({ ok: true });
+  });
+  return app;
 }
 
-function createMockStore(): MockStore {
-  return {
-    incr: vi.fn(),
-    expire: vi.fn(),
-    ttl: vi.fn(),
-  };
+async function hit(app: express.Express, publisher?: string, rpm?: number) {
+  const req = request(app).get("/");
+  if (publisher) req.set("x-test-publisher", publisher);
+  if (rpm !== undefined) req.set("x-test-rpm", String(rpm));
+  return req;
 }
 
-function createMockReq(overrides: Partial<Request> = {}): Request {
-  return {
-    headers: {},
-    ip: '127.0.0.1',
-    socket: { remoteAddress: '127.0.0.1' },
-    ...overrides,
-  } as unknown as Request;
-}
-
-function createMockRes(): Response & {
-  statusCode: number;
-  headers: Record<string, string>;
-  body: unknown;
-} {
-  const res = {
-    statusCode: 200,
-    headers: {} as Record<string, string>,
-    body: undefined as unknown,
-    setHeader(name: string, value: string) {
-      res.headers[name.toLowerCase()] = value;
-      return res;
-    },
-    status(code: number) {
-      res.statusCode = code;
-      return res;
-    },
-    json(payload: unknown) {
-      res.body = payload;
-      return res;
-    },
-  };
-  return res as unknown as Response & {
-    statusCode: number;
-    headers: Record<string, string>;
-    body: unknown;
-  };
-}
-
-describe('createPublisherRateLimiter', () => {
-  let store: MockStore;
-  let next: NextFunction;
+describe("createPublisherRateLimiter", () => {
+  let store: MemorySlidingWindowStore;
 
   beforeEach(() => {
-    store = createMockStore();
-    next = vi.fn();
+    store = new MemorySlidingWindowStore();
   });
 
-  it('keys limits per publisher', async () => {
-    store.incr.mockImplementation(async (key: string) => {
-      if (key.includes('publisher:alpha')) return 1;
-      if (key.includes('publisher:beta')) return 1;
-      return 1;
-    });
-    store.expire.mockResolvedValue(1);
-    store.ttl.mockResolvedValue(60);
-
-    const limiter = createPublisherRateLimiter({
-      store: store as never,
-      windowMs: 60_000,
-      defaultRpm: 10,
-    });
-
-    const reqAlpha = createMockReq({
-      headers: { 'x-publisher-id': 'alpha' },
-    } as Partial<Request>);
-    const reqBeta = createMockReq({
-      headers: { 'x-publisher-id': 'beta' },
-    } as Partial<Request>);
-
-    const resAlpha = createMockRes();
-    const resBeta = createMockRes();
-
-    await limiter(reqAlpha, resAlpha, next);
-    await limiter(reqBeta, resBeta, next);
-
-    expect(store.incr).toHaveBeenCalledTimes(2);
-    const keys = store.incr.mock.calls.map((c) => c[0] as string);
-    expect(keys[0]).toContain('publisher:alpha');
-    expect(keys[1]).toContain('publisher:beta');
-    expect(keys[0]).not.toEqual(keys[1]);
-    expect(next).toHaveBeenCalledTimes(2);
-    expect(resAlpha.statusCode).toBe(200);
-    expect(resBeta.statusCode).toBe(200);
+  it("keys limits per publisher", async () => {
+    const app = buildApp(store, { defaultRpm: 1, maxRpm: 100 });
+    expect((await hit(app, "alpha")).status).toBe(200);
+    expect((await hit(app, "beta")).status).toBe(200);
+    expect((await hit(app, "alpha")).status).toBe(429);
   });
 
-  it('applies per-publisher rpm override', async () => {
-    store.incr.mockResolvedValue(1);
-    store.expire.mockResolvedValue(1);
-    store.ttl.mockResolvedValue(60);
-
-    const limiter = createPublisherRateLimiter({
-      store: store as never,
-      windowMs: 60_000,
-      defaultRpm: 10,
-      publisherRpm: { alpha: 3 },
-    });
-
-    const req = createMockReq({
-      headers: { 'x-publisher-id': 'alpha' },
-    } as Partial<Request>);
-    const res = createMockRes();
-
-    await limiter(req, res, next);
-    expect(next).toHaveBeenCalledTimes(1);
-
-    // alpha has rpm 3, so 4th request should be blocked
-    store.incr.mockResolvedValue(4);
-    const res2 = createMockRes();
-    await limiter(req, res2, next);
-
-    expect(res2.statusCode).toBe(429);
-    expect(next).toHaveBeenCalledTimes(1);
+  it("applies the publisher's rpm override", async () => {
+    const app = buildApp(store, { defaultRpm: 1, maxRpm: 100 });
+    for (let i = 0; i < 3; i++) expect((await hit(app, "alpha", 3)).status).toBe(200);
+    expect((await hit(app, "alpha", 3)).status).toBe(429);
   });
 
-  it('falls back to default rpm when publisher has no override', async () => {
-    store.incr.mockResolvedValue(1);
-    store.expire.mockResolvedValue(1);
-    store.ttl.mockResolvedValue(60);
-
-    const limiter = createPublisherRateLimiter({
-      store: store as never,
-      windowMs: 60_000,
-      defaultRpm: 2,
-      publisherRpm: { alpha: 100 },
-    });
-
-    const req = createMockReq({
-      headers: { 'x-publisher-id': 'beta' },
-    } as Partial<Request>);
-    const res = createMockRes();
-
-    await limiter(req, res, next);
-    expect(next).toHaveBeenCalledTimes(1);
-
-    store.incr.mockResolvedValue(3);
-    const res2 = createMockRes();
-    await limiter(req, res2, next);
-
-    expect(res2.statusCode).toBe(429);
-    expect(next).toHaveBeenCalledTimes(1);
+  it("caps overrides at maxRpm", async () => {
+    const app = buildApp(store, { defaultRpm: 1, maxRpm: 2 });
+    expect((await hit(app, "alpha", 1000)).status).toBe(200);
+    expect((await hit(app, "alpha", 1000)).status).toBe(200);
+    const res = await hit(app, "alpha", 1000);
+    expect(res.status).toBe(429);
+    expect(res.headers["ratelimit-limit"]).toBe("2");
   });
 
-  it('enforces the configured cap even when rpm override is higher', async () => {
-    store.incr.mockResolvedValue(1);
-    store.expire.mockResolvedValue(1);
-    store.ttl.mockResolvedValue(60);
-
-    const limiter = createPublisherRateLimiter({
-      store: store as never,
-      windowMs: 60_000,
-      defaultRpm: 10,
-      publisherRpm: { alpha: 1000 },
-      maxRpm: 5,
-    });
-
-    const req = createMockReq({
-      headers: { 'x-publisher-id': 'alpha' },
-    } as Partial<Request>);
-
-    store.incr.mockResolvedValue(6);
-    const res = createMockRes();
-    await limiter(req, res, next);
-
-    expect(res.statusCode).toBe(429);
-    expect(next).not.toHaveBeenCalled();
+  it("sets 429 headers including Retry-After", async () => {
+    const app = buildApp(store, { defaultRpm: 1, maxRpm: 10 });
+    await hit(app, "alpha");
+    const res = await hit(app, "alpha");
+    expect(res.status).toBe(429);
+    expect(Number(res.headers["retry-after"])).toBeGreaterThan(0);
+    expect(res.headers["ratelimit-remaining"]).toBe("0");
+    expect(res.body.code).toBe("RATE_LIMITED");
   });
 
-  it('sets 429 response headers including Retry-After', async () => {
-    store.incr.mockResolvedValue(11);
-    store.expire.mockResolvedValue(1);
-    store.ttl.mockResolvedValue(30);
-
-    const limiter = createPublisherRateLimiter({
-      store: store as never,
-      windowMs: 60_000,
-      defaultRpm: 10,
-    });
-
-    const req = createMockReq({
-      headers: { 'x-publisher-id': 'alpha' },
-    } as Partial<Request>);
-    const res = createMockRes();
-
-    await limiter(req, res, next);
-
-    expect(res.statusCode).toBe(429);
-    expect(res.headers['retry-after']).toBeDefined();
-    expect(Number(res.headers['retry-after'])).toBeGreaterThan(0);
-    expect(res.headers['x-ratelimit-limit']).toBe('10');
-    expect(res.headers['x-ratelimit-remaining']).toBe('0');
-    expect(next).not.toHaveBeenCalled();
+  it("skips unauthenticated requests", async () => {
+    const app = buildApp(store, { defaultRpm: 1, maxRpm: 10 });
+    expect((await hit(app)).status).toBe(200);
+    expect((await hit(app)).status).toBe(200);
   });
 
-  it('fails open when the store throws', async () => {
-    store.incr.mockRejectedValue(new Error('store unavailable'));
-    store.expire.mockResolvedValue(1);
-    store.ttl.mockResolvedValue(60);
-
-    const limiter = createPublisherRateLimiter({
-      store: store as never,
-      windowMs: 60_000,
-      defaultRpm: 10,
-    });
-
-    const req = createMockReq({
-      headers: { 'x-publisher-id': 'alpha' },
-    } as Partial<Request>);
-    const res = createMockRes();
-
-    await limiter(req, res, next);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(res.statusCode).toBe(200);
+  it("fails open when the store throws", async () => {
+    const broken: RateLimitStore = { consume: vi.fn().mockRejectedValue(new Error("down")) };
+    const app = buildApp(broken, { defaultRpm: 1, maxRpm: 10 });
+    expect((await hit(app, "alpha")).status).toBe(200);
   });
 });

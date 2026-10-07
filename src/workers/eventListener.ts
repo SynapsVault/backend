@@ -11,7 +11,10 @@ const POLL_INTERVAL_MS = 30_000;
 const EVENT_PAGE_LIMIT = 100;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const LEDGER_TRACKER_PATH = join(__dirname, "..", "..", "last-processed-ledger.json");
+// Override with LEDGER_TRACKER_PATH (e.g. a mounted volume) so the checkpoint
+// survives container restarts; defaults to the project root.
+const LEDGER_TRACKER_PATH =
+  process.env.LEDGER_TRACKER_PATH ?? join(__dirname, "..", "..", "last-processed-ledger.json");
 
 const CONTRACT_ID = config.REGISTRY_CONTRACT_ID;
 

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # SynapsVault Backend API
   api:
@@ -9,33 +7,12 @@ services:
     container_name: synapsvault-backend
     ports:
       - "3000:3000"
+    # All app settings come from .env (see .env.example); the values below
+    # point the container at the bundled Postgres.
+    env_file: .env
     environment:
-      # Database
-      DATABASE_URL: ${DATABASE_URL:-postgresql://synapse:synapse@postgres:5432/synapsvault}
-      DB_POOL_MAX: ${DB_POOL_MAX:-10}
-      DB_POOL_IDLE_TIMEOUT_MS: ${DB_POOL_IDLE_TIMEOUT_MS:-30000}
-      DB_POOL_CONNECTION_TIMEOUT_MS: ${DB_POOL_CONNECTION_TIMEOUT_MS:-5000}
-
-      # Supabase (file storage)
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
-
-      # Stellar
-      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
-      STELLAR_HORIZON_URL: ${STELLAR_HORIZON_URL:-https://horizon-testnet.stellar.org}
-      STELLAR_SOROBAN_RPC_URL: ${STELLAR_SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
-
-      # Security
-      ADMIN_API_KEY: ${ADMIN_API_KEY}
-
-      # Observability
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
-
-      # CORS
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
-
-      # Node environment
+      PORT: 3000
+      DATABASE_URL: postgresql://synapse:synapse@postgres:5432/synapsvault
       NODE_ENV: ${NODE_ENV:-development}
 
     depends_on:
@@ -45,7 +22,7 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -75,45 +75,28 @@ export const CATALOG_DEFAULT_LIMIT = 20;
 export const CATALOG_MAX_LIMIT = 100;
 
 /** Query params for GET /resources (public catalog). */
-/** Body for PATCH /publishers/me/rate-limit (#rate-limit). */
+/** Body for PATCH /publishers/me/rate-limit. `null` resets to the platform default. */
 export const updateRateLimitSchema = z
   .object({
     rateLimitRpm: z
       .number()
       .int()
       .min(1)
-      .max(config.PUBLISHER_RATE_LIMIT_MAX_RPM),
+      .max(config.PUBLISHER_RATE_LIMIT_MAX_RPM)
+      .nullable(),
   })
   .strict();
 
-/** Body for PATCH /publishers/me/webhook (#webhook). */
+/** Body for PATCH /publishers/me/webhooks. `null` clears the URL or secret. */
 export const updateWebhookConfigSchema = z
   .object({
-    webhookUrl: z.url().optional(),
-    webhookSecret: z.string().min(16).optional(),
-    webhookEvents: z.array(z.enum(webhookEventValues)).optional(),
+    webhookUrl: z.url({ protocol: /^https?$/ }).nullable().optional(),
+    webhookSecret: z.string().min(16).max(256).nullable().optional(),
+    webhookEvents: z.array(z.enum(webhookEventValues)).max(webhookEventValues.length).optional(),
     webhookEnabled: z.boolean().optional(),
   })
-  .strict();
-
-/** Standard error response body returned by the API. */
-export const errorResponseSchema = z
-  .object({
-    error: z.string().min(1),
-    message: z.string().optional(),
-    details: z.unknown().optional(),
-  })
-  .strict();
-
-/** Body for POST /payments (record a payment). */
-export const recordPaymentSchema = z
-  .object({
-    resourceId: z.string().min(1),
-    payerAddress: z.string().min(1),
-    amount: z.string().min(1),
-    txHash: z.string().min(1).optional(),
-  })
-  .strict();
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, { message: "At least one field is required" });
 
 export const catalogQuerySchema = z
   .object({
