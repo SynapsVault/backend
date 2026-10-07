@@ -47,7 +47,7 @@ import {
   Client as RegistryClient,
   Errors as RegistryErrors,
   type Resource as OnchainResource,
-} from "@mindvault/registry-client";
+} from "@synapsvault/registry-client";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { x402Client } from "@x402/core/client";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
@@ -336,7 +336,7 @@ export async function runE2E(): Promise<void> {
   passStep(`wallet ready: ${wallet.publicKey}`);
 
   startStep("Register publisher");
-  const email = `e2e-${Date.now()}@mindvault.test`;
+  const email = `e2e-${Date.now()}@synapsvault.test`;
   const register = await jsonRequest<RegisterResponse>("POST", "/publishers", {
     name: "E2E Test Publisher",
     email,

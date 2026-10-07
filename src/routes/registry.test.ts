@@ -20,16 +20,21 @@ vi.mock("../services/registryClient.js", () => ({
 }));
 
 vi.mock("../lib/logger.js", () => ({
+  getRequestId: () => undefined,
   getLogger: () => ({
     error: vi.fn(),
+    warn: vi.fn(),
+    info: vi.fn(),
   }),
 }));
 
 import registryRouter from "./registry.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 
 function createTestApp() {
   const app = express();
   app.use(registryRouter);
+  app.use(errorHandler);
   return app;
 }
 
@@ -89,8 +94,8 @@ describe("GET /registry/status — public registry metadata endpoint", () => {
 
     expect(res.status).toBe(503);
     expect(res.body).toEqual({
-      error: "registry_unavailable",
-      message: "Unable to fetch registry status. Please try again later.",
+      error: "Unable to fetch registry status. Please try again later.",
+      code: "SERVICE_UNAVAILABLE",
     });
   });
 
@@ -100,7 +105,7 @@ describe("GET /registry/status — public registry metadata endpoint", () => {
     const res = await request(createTestApp()).get("/registry/status");
 
     expect(res.status).toBe(503);
-    expect(res.body.error).toBe("registry_unavailable");
+    expect(res.body.code).toBe("SERVICE_UNAVAILABLE");
   });
 
   it("converts resource count from number to number correctly", async () => {

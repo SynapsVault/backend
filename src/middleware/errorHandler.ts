@@ -1,93 +1,37 @@
-import { Request, Response, NextFunction } from 'express';
-import * as Sentry from '@sentry/node';
-import { AppError } from '../errors/AppError';
-import { logger } from '../utils/logger';
+import type { NextFunction, Request, Response } from "express";
+import { getStatusCode, serializeError } from "../lib/errors.js";
+import { getLogger, getRequestId } from "../lib/logger.js";
+import { captureServerException } from "../lib/sentry.js";
 
-export interface ErrorResponse {
-  error: {
-    message: string;
-    code: string;
-    statusCode: number;
-    details?: unknown;
-  };
-}
+/**
+ * Global error handler. Converts thrown errors (AppError or otherwise) into the
+ * standard JSON error body; 5xx errors are logged and reported to Sentry.
+ */
+export function errorHandler(err: unknown, req: Request, res: Response, next: NextFunction): void {
+  const status = getStatusCode(err);
+  const log = getLogger();
+  const context = { method: req.method, path: req.originalUrl, status };
 
-export function errorHandler(
-  err: unknown,
-  req: Request,
-  res: Response,
-  _next: NextFunction,
-): void {
-  const requestContext = {
-    method: req.method,
-    url: req.originalUrl,
-    ip: req.ip,
-    requestId: (req as Request & { id?: string }).id,
-  };
-
-  let statusCode = 500;
-  let code = 'INTERNAL_SERVER_ERROR';
-  let message = 'An unexpected error occurred';
-  let details: unknown;
-
-  if (err instanceof AppError) {
-    statusCode = err.statusCode;
-    code = err.code;
-    message = err.message;
-    details = err.details;
-  } else if (err instanceof Error) {
-    message = err.message || message;
-  }
-
-  const isServerError = statusCode >= 500;
-
-  if (isServerError) {
-    logger.error('Unhandled server error', {
-      ...requestContext,
-      error: err instanceof Error ? err.message : String(err),
-      stack: err instanceof Error ? err.stack : undefined,
-    });
-    Sentry.captureException(err, { extra: requestContext });
+  if (status >= 500) {
+    log.error({ err, ...context, event: "unhandled_error" }, "request failed");
+    captureServerException(err);
   } else {
-    logger.warn('Client error', {
-      ...requestContext,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    log.warn({ ...context, event: "client_error", reason: (err as Error)?.message }, "request rejected");
   }
 
   if (res.headersSent) {
+    next(err);
     return;
   }
 
-  const body: ErrorResponse = {
-    error: {
-      message,
-      code,
-      statusCode,
-      ...(details !== undefined ? { details } : {}),
-    },
-  };
-
-  res.status(statusCode).json(body);
+  res.status(status).json(serializeError(err, getRequestId()));
 }
 
+/** Fallback for unmatched routes. */
 export function notFoundHandler(req: Request, res: Response): void {
-  const requestContext = {
-    method: req.method,
-    url: req.originalUrl,
-    ip: req.ip,
-    requestId: (req as Request & { id?: string }).id,
-  };
-
-  logger.warn('Route not found', requestContext);
-
-  const body: ErrorResponse = {
-    error: {
-      message: `Route ${req.method} ${req.originalUrl} not found`,
-      code: 'NOT_FOUND',
-      statusCode: 404,
-    },
-  };
-
-  res.status(404).json(body);
+  res.status(404).json({
+    error: `Route ${req.method} ${req.path} not found`,
+    code: "NOT_FOUND",
+    ...(getRequestId() ? { requestId: getRequestId() } : {}),
+  });
 }

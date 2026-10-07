@@ -45,6 +45,7 @@ import {
 } from "../services/registryClient.js";
 import { parsePayerFromXPayment } from "../lib/parseXPayment.js";
 import { AppError } from "../lib/errors.js";
+import { emitToPublisher } from "../services/webhookService.js";
 
 const router: RouterType = Router();
 
@@ -181,12 +182,12 @@ router.get("/resources", async (req, res) => {
       countCatalog(hasFilters ? parsed.data : undefined),
     ]);
   } catch (err: any) {
-    getLogger().error({ err, event: "catalog_error" }, "catalog query failed");
-    throw new AppError("INTERNAL_ERROR", err.message, {
-      detail: err.detail,
-      hint: err.hint,
-      code: err.code,
-    });
+    // DB error details stay in the logs; they're not safe to return publicly.
+    getLogger().error(
+      { err, detail: err?.detail, hint: err?.hint, pgCode: err?.code, event: "catalog_error" },
+      "catalog query failed",
+    );
+    throw new AppError("INTERNAL_ERROR", "Failed to load catalog", undefined, { cause: err });
   }
 
   const nextOffset = offset + catalog.length < total ? offset + catalog.length : null;
@@ -276,6 +277,18 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
       amount: resource.price,
     })
     .returning();
+
+  // Fire-and-forget: webhook delivery never delays or fails content access.
+  const purchase = {
+    paymentId: payment.id,
+    resourceId: payment.resourceId,
+    amount: payment.amount,
+    payerAddress: payment.payerAddress,
+    recipientAddress: payment.recipientAddress,
+    paidAt: payment.paidAt,
+  };
+  void emitToPublisher(resource.publisherId, "resource.purchased", purchase);
+  void emitToPublisher(resource.publisherId, "payment.received", purchase);
 
   if (resource.resourceType === "link") {
     res.json({
@@ -625,7 +638,7 @@ router.post(
       }
     }
     if (!confirmed) {
-      throw new AppError("UPSTREAM_ERROR", "Transaction confirmation timed out");
+      throw new AppError("GATEWAY_TIMEOUT", "Transaction confirmation timed out");
     }
 
     // Sync the DB price to match the on-chain value
@@ -710,7 +723,7 @@ router.post(
       }
     }
     if (!confirmed) {
-      throw new AppError("UPSTREAM_ERROR", "Transaction confirmation timed out");
+      throw new AppError("GATEWAY_TIMEOUT", "Transaction confirmation timed out");
     }
 
     const [updated] = await db

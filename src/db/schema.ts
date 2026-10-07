@@ -41,8 +41,8 @@ export const publishers = pgTable("publishers", {
   // Webhook delivery configuration. Nullable so publishers can opt in later.
   webhookUrl: text("webhook_url"),
   webhookSecret: text("webhook_secret"),
-  // JSON-stringified array of enabled WebhookEvent values.
-  webhookEvents: text("webhook_events"),
+  // Subscribed WebhookEvent values; null/empty means all events.
+  webhookEvents: text("webhook_events").array(),
   webhookEnabled: boolean("webhook_enabled").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });

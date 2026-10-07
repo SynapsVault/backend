@@ -2,11 +2,19 @@ import { describe, it, expect, vi } from "vitest";
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod/v4";
 import { validate } from "./middleware/validate.js";
+import { AppError } from "./lib/errors.js";
 import {
   publisherRegisterSchema,
   verifyContentSchema,
   catalogQuerySchema,
 } from "./schemas/requests.js";
+
+function expectValidationError(next: NextFunction) {
+  expect(next).toHaveBeenCalledOnce();
+  const err = (next as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
+  expect(err).toBeInstanceOf(AppError);
+  expect(err).toMatchObject({ status: 400, code: "VALIDATION_ERROR" });
+}
 
 function mockResponse() {
   const res = {
@@ -25,7 +33,7 @@ describe("validate middleware", () => {
 
     validate(schema)(req, res, next);
 
-    expect(next).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledWith();
     expect(req.body).toEqual({ name: "SynapsVault" });
   });
 
@@ -36,15 +44,9 @@ describe("validate middleware", () => {
 
     validate(publisherRegisterSchema)(req, res, next);
 
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: expect.objectContaining({
-          _errors: expect.any(Array),
-        }),
-      }),
-    );
+    expectValidationError(next);
+    const err = (next as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as AppError;
+    expect(err.details).toEqual(expect.objectContaining({ _errors: expect.any(Array) }));
   });
 
   it("rejects unknown fields with strict schemas", () => {
@@ -56,8 +58,7 @@ describe("validate middleware", () => {
 
     validate(verifyContentSchema)(req, res, next);
 
-    expect(next).not.toHaveBeenCalled();
-    expect(res.status).toHaveBeenCalledWith(400);
+    expectValidationError(next);
   });
 });
 

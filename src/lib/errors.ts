@@ -1,95 +1,56 @@
+/**
+ * Application error type and the JSON error body the API returns.
+ *
+ * Every error response keeps the long-standing `{ error: "<message>" }` shape
+ * so existing clients keep working, and adds a machine-readable `code`, an
+ * optional `details` payload and the request id for support/debugging.
+ */
+
 export type ErrorCode =
-  | 'VALIDATION_ERROR'
-  | 'NOT_FOUND'
-  | 'UNAUTHORIZED'
-  | 'FORBIDDEN'
-  | 'CONFLICT'
-  | 'RATE_LIMITED'
-  | 'UPSTREAM_ERROR'
-  | 'INTERNAL_ERROR';
+  | "VALIDATION_ERROR"
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "PAYLOAD_TOO_LARGE"
+  | "RATE_LIMITED"
+  | "INTERNAL_ERROR"
+  | "UPSTREAM_ERROR"
+  | "SERVICE_UNAVAILABLE"
+  | "GATEWAY_TIMEOUT";
 
-export interface ErrorResponseBody {
-  error: {
-    code: ErrorCode;
-    message: string;
-    details?: unknown;
-    requestId?: string;
-  };
-}
-
-export interface AppErrorOptions {
-  code: ErrorCode;
-  message: string;
-  status?: number;
-  details?: unknown;
-  requestId?: string;
-  cause?: unknown;
-}
-
-const DEFAULT_STATUS: Record<ErrorCode, number> = {
+export const ERROR_STATUS: Record<ErrorCode, number> = {
   VALIDATION_ERROR: 400,
-  NOT_FOUND: 404,
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,
+  NOT_FOUND: 404,
   CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
   RATE_LIMITED: 429,
-  UPSTREAM_ERROR: 502,
   INTERNAL_ERROR: 500,
+  UPSTREAM_ERROR: 502,
+  SERVICE_UNAVAILABLE: 503,
+  GATEWAY_TIMEOUT: 504,
 };
+
+export interface ErrorResponseBody {
+  error: string;
+  code: ErrorCode;
+  details?: unknown;
+  requestId?: string;
+}
 
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly status: number;
   readonly details?: unknown;
-  readonly requestId?: string;
 
-  constructor(options: AppErrorOptions) {
-    super(options.message);
-    this.name = 'AppError';
-    this.code = options.code;
-    this.status = options.status ?? DEFAULT_STATUS[options.code];
-    this.details = options.details;
-    this.requestId = options.requestId;
-    if (options.cause !== undefined) {
-      (this as { cause?: unknown }).cause = options.cause;
-    }
-    Object.setPrototypeOf(this, AppError.prototype);
-  }
-
-  static validation(message: string, details?: unknown): AppError {
-    return new AppError({ code: 'VALIDATION_ERROR', message, details });
-  }
-
-  static notFound(message = 'Resource not found', details?: unknown): AppError {
-    return new AppError({ code: 'NOT_FOUND', message, details });
-  }
-
-  static unauthorized(message = 'Unauthorized', details?: unknown): AppError {
-    return new AppError({ code: 'UNAUTHORIZED', message, details });
-  }
-
-  static forbidden(message = 'Forbidden', details?: unknown): AppError {
-    return new AppError({ code: 'FORBIDDEN', message, details });
-  }
-
-  static conflict(message: string, details?: unknown): AppError {
-    return new AppError({ code: 'CONFLICT', message, details });
-  }
-
-  static rateLimited(message = 'Too many requests', details?: unknown): AppError {
-    return new AppError({ code: 'RATE_LIMITED', message, details });
-  }
-
-  static upstream(message = 'Upstream service error', details?: unknown): AppError {
-    return new AppError({ code: 'UPSTREAM_ERROR', message, details });
-  }
-
-  static internal(message = 'Internal server error', details?: unknown): AppError {
-    return new AppError({ code: 'INTERNAL_ERROR', message, details });
-  }
-
-  toJSON(): ErrorResponseBody {
-    return serializeError(this);
+  constructor(code: ErrorCode, message: string, details?: unknown, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "AppError";
+    this.code = code;
+    this.status = ERROR_STATUS[code];
+    this.details = details;
   }
 }
 
@@ -97,36 +58,41 @@ export function isAppError(value: unknown): value is AppError {
   return value instanceof AppError;
 }
 
-export function serializeError(
-  error: unknown,
-  requestId?: string,
-): ErrorResponseBody {
+/** HTTP status for any thrown value (honours `status`/`statusCode` set by libs like body-parser). */
+export function getStatusCode(error: unknown): number {
+  if (isAppError(error)) return error.status;
+  if (typeof error === "object" && error !== null) {
+    const status = (error as { status?: unknown; statusCode?: unknown }).status
+      ?? (error as { statusCode?: unknown }).statusCode;
+    if (typeof status === "number" && status >= 400 && status < 600) return status;
+  }
+  return 500;
+}
+
+function codeForStatus(status: number): ErrorCode {
+  const match = (Object.entries(ERROR_STATUS) as [ErrorCode, number][]).find(([, s]) => s === status);
+  if (match) return match[0];
+  return status >= 500 ? "INTERNAL_ERROR" : "VALIDATION_ERROR";
+}
+
+/**
+ * Converts any thrown value into the public error body. Messages of
+ * unexpected (non-AppError) 5xx errors are never exposed to clients.
+ */
+export function serializeError(error: unknown, requestId?: string): ErrorResponseBody {
+  const status = getStatusCode(error);
+  let body: ErrorResponseBody;
+
   if (isAppError(error)) {
-    return {
-      error: {
-        code: error.code,
-        message: error.message,
-        ...(error.details !== undefined ? { details: error.details } : {}),
-        ...(error.requestId ?? requestId
-          ? { requestId: error.requestId ?? requestId }
-          : {}),
-      },
-    };
+    body = { error: error.message, code: error.code };
+    if (error.details !== undefined) body.details = error.details;
+  } else if (status < 500 && error instanceof Error && error.message) {
+    // Client errors raised by middleware (e.g. malformed JSON, body too large).
+    body = { error: error.message, code: codeForStatus(status) };
+  } else {
+    body = { error: "Internal server error", code: "INTERNAL_ERROR" };
   }
 
-  const message =
-    error instanceof Error ? error.message : 'Internal server error';
-
-  return {
-    error: {
-      code: 'INTERNAL_ERROR',
-      message,
-      ...(requestId ? { requestId } : {}),
-    },
-  };
+  if (requestId) body.requestId = requestId;
+  return body;
 }
-
-export function getStatusCode(error: unknown): number {
-  return isAppError(error) ? error.status : DEFAULT_STATUS.INTERNAL_ERROR;
-}
-</｜｜DSML｜｜ parameter>

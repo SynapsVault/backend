@@ -14,7 +14,8 @@ import { db } from "../src/db/client.js";
 import { publishers, resources } from "../src/db/schema.js";
 import { registerPublisher } from "../src/services/publisherService.js";
 import { createLinkResource } from "../src/services/resourceService.js";
-import { registryClient, registryKeypair } from "../src/services/registryClient.js";
+import { contract } from "@stellar/stellar-sdk";
+import { NETWORK_PASSPHRASE, registryClient, registryKeypair } from "../src/services/registryClient.js";
 import { config } from "../src/config.js";
 
 const SEED_EMAIL = "seed-dev@mindvault.local";
@@ -134,7 +135,7 @@ async function registerOnChain(resource: {
       tags: [],
     });
 
-    await tx.signAndSend({ signer: registryKeypair });
+    await tx.signAndSend(contract.basicNodeSigner(registryKeypair, NETWORK_PASSPHRASE));
 
     await db
       .update(resources)

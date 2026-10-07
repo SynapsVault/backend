@@ -1,107 +1,169 @@
+import { createHmac } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { config } from "../config.js";
+import { db } from "../db/client.js";
+import { publishers } from "../db/schema.js";
 import { getLogger } from "../lib/logger.js";
+import type { WebhookEvent } from "../schemas/webhooks.js";
 
-export type WebhookEvent =
-  | "resource.purchased"
-  | "resource.listed"
-  | "resource.delisted"
-  | "payment.received"
-  | "payment.refunded"
-  | "subscription.started"
-  | "subscription.renewed"
-  | "subscription.cancelled";
+export type { WebhookEvent } from "../schemas/webhooks.js";
 
 export interface WebhookPayload {
-  event:     WebhookEvent;
+  event: WebhookEvent | "webhook.test";
   timestamp: string;
-  data:      Record<string, unknown>;
+  data: Record<string, unknown>;
 }
 
-interface Target { url: string; secret?: string; }
-
-export interface WebhookTarget extends Target {
+export interface WebhookTarget {
   publisherId: string;
-  events?:     WebhookEvent[];
+  url: string;
+  secret?: string;
+  /** Subscribed events; empty means every event. */
+  events: WebhookEvent[];
 }
 
-const log        = getLogger();
-const DELAYS     = [1_000, 5_000, 15_000];
-
-async function sign(body: string, secret: string): Promise<string> {
-  const key = await crypto.subtle.importKey("raw",
-    new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-  return Buffer.from(sig).toString("hex");
+export interface DeliveryResult {
+  delivered: boolean;
+  attempts: number;
+  status?: number;
+  error?: string;
 }
 
-export async function deliver(t: Target, payload: WebhookPayload, attempt = 0): Promise<void> {
-  const body    = JSON.stringify(payload);
+const BASE_RETRY_DELAY_MS = 1_000;
+
+export const SIGNATURE_HEADER = "X-SynapsVault-Signature";
+
+/** Hex HMAC-SHA256 of the raw request body, keyed by the publisher's webhook secret. */
+export function signPayload(body: string, secret: string): string {
+  return createHmac("sha256", secret).update(body).digest("hex");
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * POSTs the payload, retrying failures with exponential backoff
+ * (1s, 2s, 4s, …) up to WEBHOOK_MAX_ATTEMPTS. Never throws.
+ */
+export async function deliver(
+  target: Pick<WebhookTarget, "url" | "secret">,
+  payload: WebhookPayload,
+  options: { maxAttempts?: number } = {},
+): Promise<DeliveryResult> {
+  const log = getLogger();
+  const body = JSON.stringify(payload);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-SynapsVault-Event":     payload.event,
+    "User-Agent": "SynapsVault-Webhooks/1.0",
+    "X-SynapsVault-Event": payload.event,
     "X-SynapsVault-Timestamp": payload.timestamp,
   };
-  if (t.secret) headers["X-SynapsVault-Signature"] = await sign(body, t.secret);
+  if (target.secret) headers[SIGNATURE_HEADER] = signPayload(body, target.secret);
 
-  try {
-    const res = await fetch(t.url, { method: "POST", headers, body, signal: AbortSignal.timeout(10_000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    log.info({ url: t.url, event: payload.event }, "webhook ok");
-  } catch (err) {
-    log.warn({ url: t.url, attempt, err }, "webhook failed");
-    if (attempt < DELAYS.length) {
-      await new Promise((r) => setTimeout(r, DELAYS[attempt]));
-      return deliver(t, payload, attempt + 1);
+  const maxAttempts = Math.max(1, options.maxAttempts ?? config.WEBHOOK_MAX_ATTEMPTS);
+  let lastStatus: number | undefined;
+  let lastError: string | undefined;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(target.url, {
+        method: "POST",
+        headers,
+        body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(config.WEBHOOK_TIMEOUT_MS),
+      });
+      lastStatus = res.status;
+      if (res.ok) {
+        log.info({ event: "webhook_delivered", webhookEvent: payload.event, attempt }, "webhook delivered");
+        return { delivered: true, attempts: attempt, status: res.status };
+      }
+      lastError = `HTTP ${res.status}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
     }
-    log.error({ url: t.url, event: payload.event }, "webhook max retries exceeded");
+
+    log.warn({ event: "webhook_attempt_failed", webhookEvent: payload.event, attempt, error: lastError }, "webhook attempt failed");
+    if (attempt < maxAttempts) await sleep(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1));
   }
+
+  log.error({ event: "webhook_failed", webhookEvent: payload.event, attempts: maxAttempts, error: lastError }, "webhook delivery failed");
+  return { delivered: false, attempts: maxAttempts, status: lastStatus, error: lastError };
 }
 
-export function emit(targets: Target[], event: WebhookEvent, data: Record<string, unknown>) {
-  const payload: WebhookPayload = { event, timestamp: new Date().toISOString(), data };
-  targets.forEach((t) => deliver(t, payload));
-}
+/** Loads the publisher's enabled webhook target, or null when not configured. */
+export async function resolveTarget(publisherId: string): Promise<WebhookTarget | null> {
+  const [row] = await db
+    .select({
+      url: publishers.webhookUrl,
+      secret: publishers.webhookSecret,
+      events: publishers.webhookEvents,
+      enabled: publishers.webhookEnabled,
+    })
+    .from(publishers)
+    .where(eq(publishers.id, publisherId))
+    .limit(1);
 
-export async function resolveTargets(publisherId: string): Promise<WebhookTarget[]> {
-  const { db } = await import("../db/client.js");
-  const { publishers } = await import("../db/schema.js");
-  const { eq } = await import("drizzle-orm");
-
-  const rows = await db.select().from(publishers).where(eq(publishers.id, publisherId)).limit(1);
-  const row  = rows[0] as Record<string, unknown> | undefined;
-  if (!row) return [];
-
-  const config = (row.webhookConfig ?? row.webhook_config) as
-    | { enabled?: boolean; url?: string; secret?: string; events?: WebhookEvent[] }
-    | null
-    | undefined;
-  if (!config || !config.enabled || !config.url) return [];
-
-  return [{
+  if (!row || !row.enabled || !row.url) return null;
+  return {
     publisherId,
-    url:    config.url,
-    secret: config.secret,
-    events: config.events,
-  }];
+    url: row.url,
+    secret: row.secret ?? undefined,
+    events: (row.events ?? []) as WebhookEvent[],
+  };
 }
 
+/**
+ * Delivers `event` to the publisher's webhook if they are subscribed to it.
+ * Resolves once delivery finishes; never throws — callers should not await it
+ * on a request's critical path.
+ */
 export async function emitToPublisher(
   publisherId: string,
   event: WebhookEvent,
   data: Record<string, unknown>,
-): Promise<void> {
-  const targets = await resolveTargets(publisherId);
-  const subscribed = targets.filter((t) => !t.events || t.events.includes(event));
-  if (subscribed.length === 0) return;
-  emit(subscribed, event, data);
+): Promise<DeliveryResult | null> {
+  try {
+    const target = await resolveTarget(publisherId);
+    if (!target) return null;
+    if (target.events.length > 0 && !target.events.includes(event)) return null;
+    return await deliver(target, { event, timestamp: new Date().toISOString(), data });
+  } catch (err) {
+    getLogger().error({ err, event: "webhook_emit_error", publisherId }, "webhook emit failed");
+    return null;
+  }
 }
 
-export async function testWebhook(publisherId: string): Promise<{ delivered: number; targets: number }> {
-  const targets = await resolveTargets(publisherId);
-  const payload: WebhookPayload = {
-    event:     "resource.listed",
-    timestamp: new Date().toISOString(),
-    data:      { test: true, publisherId },
-  };
-  await Promise.all(targets.map((t) => deliver(t, payload)));
-  return { delivered: targets.length, targets: targets.length };
+const PRIVATE_IPV4 = [/^0\./, /^10\./, /^127\./, /^169\.254\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./];
+
+/**
+ * Basic SSRF guard for publisher-supplied webhook URLs: rejects loopback,
+ * link-local and private-network literals (and requires https in production).
+ * Returns a human-readable problem, or null when the URL is acceptable.
+ */
+export function webhookUrlProblem(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "webhookUrl must be a valid URL";
+  }
+  if (url.protocol !== "https:" && (config.NODE_ENV === "production" || url.protocol !== "http:")) {
+    return "webhookUrl must use https";
+  }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    PRIVATE_IPV4.some((re) => re.test(host)) ||
+    host === "::" ||
+    host === "::1" ||
+    /^f[cd][0-9a-f]{2}:/.test(host) ||
+    /^fe80:/.test(host) ||
+    host.startsWith("::ffff:")
+  ) {
+    return "webhookUrl must not point to a private or loopback address";
+  }
+  return null;
 }

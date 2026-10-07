@@ -66,11 +66,13 @@ vi.mock("../services/publisherService.js", () => ({
 }));
 
 import publisherRouter from "./publishers.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 
 function createTestApp() {
   const app = express();
   app.use(express.json());
   app.use(publisherRouter);
+  app.use(errorHandler);
   return app;
 }
 
@@ -158,6 +160,23 @@ describe("POST /publishers — registration (#294)", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Email already registered");
+  });
+
+  it("returns 409 for a drizzle-wrapped unique violation", async () => {
+    mockRegisterPublisher.mockRejectedValue(
+      Object.assign(new Error("Failed query: insert into publishers ..."), {
+        cause: { code: "23505" },
+      }),
+    );
+
+    const res = await request(createTestApp()).post("/publishers").send({
+      name: "Alice",
+      email: "alice@example.com",
+      walletAddress: "GALICE",
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("CONFLICT");
   });
 
   it("rethrows unexpected errors from the service", async () => {

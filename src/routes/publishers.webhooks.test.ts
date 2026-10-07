@@ -1,343 +1,238 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import request from 'supertest';
-import express from 'express';
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import express from "express";
+import request from "supertest";
 
-// Mock auth middleware
-const mockAuth = vi.fn((req: any, _res: any, next: any) => {
-  req.user = { id: 'user-1', role: 'publisher' };
-  next();
-});
-
-const mockRequireAuth = vi.fn((req: any, res: any, next: any) => {
-  if (!req.headers.authorization) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  req.user = { id: 'user-1', role: 'publisher' };
-  next();
-});
-
-vi.mock('../middleware/auth', () => ({
-  requireAuth: (req: any, res: any, next: any) => mockRequireAuth(req, res, next),
-  auth: (req: any, res: any, next: any) => mockAuth(req, res, next),
+const { state, mockDeliver } = vi.hoisted(() => ({
+  state: {
+    publisher: null as Record<string, unknown> | null,
+    lastSet: null as Record<string, unknown> | null,
+  },
+  mockDeliver: vi.fn(),
 }));
 
-// Mock rate limit service
-const mockGetRateLimit = vi.fn();
-const mockUpdateRateLimit = vi.fn();
-
-vi.mock('../services/rateLimitService', () => ({
-  getRateLimit: (...args: any[]) => mockGetRateLimit(...args),
-  updateRateLimit: (...args: any[]) => mockUpdateRateLimit(...args),
+vi.mock("../config.js", () => ({
+  config: {
+    NODE_ENV: "production",
+    BASE_URL: "http://localhost:4021",
+    PUBLISHER_RATE_LIMIT_RPM_DEFAULT: 60,
+    PUBLISHER_RATE_LIMIT_MAX_RPM: 1000,
+    PUBLISHER_RATE_LIMIT_WINDOW_MS: 60_000,
+  },
 }));
 
-// Mock webhook service
-const mockListWebhooks = vi.fn();
-const mockCreateWebhook = vi.fn();
-const mockUpdateWebhook = vi.fn();
-const mockDeleteWebhook = vi.fn();
-
-vi.mock('../services/webhookService', () => ({
-  listWebhooks: (...args: any[]) => mockListWebhooks(...args),
-  createWebhook: (...args: any[]) => mockCreateWebhook(...args),
-  updateWebhook: (...args: any[]) => mockUpdateWebhook(...args),
-  deleteWebhook: (...args: any[]) => mockDeleteWebhook(...args),
+vi.mock("../db/schema.js", () => ({
+  publishers: { id: "id", rateLimitRpm: "rate_limit_rpm" },
+  resources: {},
+  payments: {},
 }));
 
-import publishersRouter from './publishers';
+// update().set().where().returning() — echoes the merged row back.
+vi.mock("../db/client.js", () => ({
+  db: {
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        state.lastSet = values;
+        return {
+          where: () => ({
+            returning: () => Promise.resolve([{ ...state.publisher, ...values }]),
+          }),
+        };
+      },
+    }),
+  },
+}));
 
-function buildApp() {
-  const app = express();
-  app.use(express.json());
-  app.use('/publishers', publishersRouter);
-  return app;
+vi.mock("../middleware/apiKeyAuth.js", () => ({
+  apiKeyAuth: (req: any, res: any, next: any) => {
+    if (!state.publisher) {
+      res.status(401).json({ error: "Missing x-api-key header" });
+      return;
+    }
+    req.publisher = state.publisher;
+    next();
+  },
+}));
+
+vi.mock("../middleware/rateLimiters.js", () => ({
+  publisherRateLimit: (_req: any, _res: any, next: any) => next(),
+}));
+
+vi.mock("../services/publisherService.js", () => ({
+  registerPublisher: vi.fn(),
+  getPublisherResources: vi.fn(),
+}));
+
+vi.mock("../services/webhookService.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/webhookService.js")>()),
+  deliver: mockDeliver,
+}));
+
+import publisherRouter from "./publishers.js";
+import { errorHandler } from "../middleware/errorHandler.js";
+
+const app = express().use(express.json()).use(publisherRouter).use(errorHandler);
+
+function basePublisher(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "pub-1",
+    name: "Alice",
+    email: "alice@example.com",
+    walletAddress: "GALICE",
+    rateLimitRpm: null,
+    webhookUrl: null,
+    webhookSecret: null,
+    webhookEvents: null,
+    webhookEnabled: false,
+    ...overrides,
+  };
 }
 
-describe('publisher rate-limit and webhook routes', () => {
-  let app: express.Express;
-
+describe("publisher rate-limit routes", () => {
   beforeEach(() => {
-    app = buildApp();
-    vi.clearAllMocks();
+    state.publisher = basePublisher();
+    state.lastSet = null;
   });
 
-  describe('GET /publishers/:id/rate-limit', () => {
-    it('requires authentication', async () => {
-      const res = await request(app).get('/publishers/pub-1/rate-limit');
-      expect(res.status).toBe(401);
-      expect(res.body).toEqual({ error: 'Unauthorized' });
-    });
+  it("requires authentication", async () => {
+    state.publisher = null;
+    expect((await request(app).get("/publishers/me/rate-limit")).status).toBe(401);
+    expect((await request(app).patch("/publishers/me/rate-limit").send({ rateLimitRpm: 5 })).status).toBe(401);
+  });
 
-    it('returns the rate limit for the publisher', async () => {
-      mockGetRateLimit.mockResolvedValue({
-        publisherId: 'pub-1',
-        requestsPerMinute: 120,
-        burst: 20,
-      });
-
-      const res = await request(app)
-        .get('/publishers/pub-1/rate-limit')
-        .set('Authorization', 'Bearer token');
-
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({
-        publisherId: 'pub-1',
-        requestsPerMinute: 120,
-        burst: 20,
-      });
-      expect(mockGetRateLimit).toHaveBeenCalledWith('pub-1');
-    });
-
-    it('returns 404 when the publisher does not exist', async () => {
-      mockGetRateLimit.mockResolvedValue(null);
-
-      const res = await request(app)
-        .get('/publishers/missing/rate-limit')
-        .set('Authorization', 'Bearer token');
-
-      expect(res.status).toBe(404);
-      expect(res.body).toEqual({ error: 'Publisher not found' });
+  it("returns the platform default when there is no override", async () => {
+    const res = await request(app).get("/publishers/me/rate-limit");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      rateLimitRpm: 60,
+      override: null,
+      defaultRpm: 60,
+      maxRpm: 1000,
+      windowMs: 60_000,
     });
   });
 
-  describe('PUT /publishers/:id/rate-limit', () => {
-    it('requires authentication', async () => {
-      const res = await request(app)
-        .put('/publishers/pub-1/rate-limit')
-        .send({ requestsPerMinute: 60 });
+  it("updates the override", async () => {
+    const res = await request(app).patch("/publishers/me/rate-limit").send({ rateLimitRpm: 120 });
+    expect(res.status).toBe(200);
+    expect(state.lastSet).toEqual({ rateLimitRpm: 120 });
+    expect(res.body).toMatchObject({ rateLimitRpm: 120, override: 120 });
+  });
 
-      expect(res.status).toBe(401);
-    });
+  it("resets the override with null", async () => {
+    state.publisher = basePublisher({ rateLimitRpm: 500 });
+    const res = await request(app).patch("/publishers/me/rate-limit").send({ rateLimitRpm: null });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ rateLimitRpm: 60, override: null });
+  });
 
-    it('rejects invalid payloads', async () => {
-      const res = await request(app)
-        .put('/publishers/pub-1/rate-limit')
-        .set('Authorization', 'Bearer token')
-        .send({ requestsPerMinute: -5 });
-
+  it.each([{ rateLimitRpm: -5 }, { rateLimitRpm: "fast" }, { rateLimitRpm: 5000 }, {}, { rateLimitRpm: 5, extra: 1 }])(
+    "rejects invalid payload %j",
+    async (body) => {
+      const res = await request(app).patch("/publishers/me/rate-limit").send(body);
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
-      expect(mockUpdateRateLimit).not.toHaveBeenCalled();
+      expect(res.body.code).toBe("VALIDATION_ERROR");
+      expect(state.lastSet).toBeNull();
+    },
+  );
+});
+
+describe("publisher webhook routes", () => {
+  beforeEach(() => {
+    state.publisher = basePublisher();
+    state.lastSet = null;
+    mockDeliver.mockReset();
+  });
+
+  it("requires authentication", async () => {
+    state.publisher = null;
+    expect((await request(app).get("/publishers/me/webhooks")).status).toBe(401);
+    expect((await request(app).patch("/publishers/me/webhooks").send({ webhookEnabled: true })).status).toBe(401);
+    expect((await request(app).post("/publishers/me/webhooks/test")).status).toBe(401);
+  });
+
+  it("returns the configuration with a masked secret", async () => {
+    state.publisher = basePublisher({
+      webhookUrl: "https://hooks.example.com/a",
+      webhookSecret: "abcdefghijklmnop1234",
+      webhookEvents: ["resource.purchased"],
+      webhookEnabled: true,
     });
-
-    it('rejects non-numeric values', async () => {
-      const res = await request(app)
-        .put('/publishers/pub-1/rate-limit')
-        .set('Authorization', 'Bearer token')
-        .send({ requestsPerMinute: 'fast' });
-
-      expect(res.status).toBe(400);
-      expect(mockUpdateRateLimit).not.toHaveBeenCalled();
-    });
-
-    it('updates the rate limit', async () => {
-      mockUpdateRateLimit.mockResolvedValue({
-        publisherId: 'pub-1',
-        requestsPerMinute: 60,
-        burst: 10,
-      });
-
-      const res = await request(app)
-        .put('/publishers/pub-1/rate-limit')
-        .set('Authorization', 'Bearer token')
-        .send({ requestsPerMinute: 60, burst: 10 });
-
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual({
-        publisherId: 'pub-1',
-        requestsPerMinute: 60,
-        burst: 10,
-      });
-      expect(mockUpdateRateLimit).toHaveBeenCalledWith('pub-1', {
-        requestsPerMinute: 60,
-        burst: 10,
-      });
+    const res = await request(app).get("/publishers/me/webhooks");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      webhookUrl: "https://hooks.example.com/a",
+      webhookSecret: "****************1234",
+      webhookEvents: ["resource.purchased"],
+      webhookEnabled: true,
     });
   });
 
-  describe('GET /publishers/:id/webhooks', () => {
-    it('requires authentication', async () => {
-      const res = await request(app).get('/publishers/pub-1/webhooks');
-      expect(res.status).toBe(401);
-    });
-
-    it('masks webhook secrets in the response', async () => {
-      mockListWebhooks.mockResolvedValue([
-        {
-          id: 'wh-1',
-          publisherId: 'pub-1',
-          url: 'https://example.com/hook',
-          secret: 'super-secret-value',
-          events: ['publish'],
-          active: true,
-        },
-      ]);
-
-      const res = await request(app)
-        .get('/publishers/pub-1/webhooks')
-        .set('Authorization', 'Bearer token');
-
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveLength(1);
-      expect(res.body[0].secret).not.toBe('super-secret-value');
-      expect(res.body[0].secret).toMatch(/\*+/);
-      expect(res.body[0].url).toBe('https://example.com/hook');
-      expect(res.body[0].id).toBe('wh-1');
-    });
-
-    it('returns an empty list when there are no webhooks', async () => {
-      mockListWebhooks.mockResolvedValue([]);
-
-      const res = await request(app)
-        .get('/publishers/pub-1/webhooks')
-        .set('Authorization', 'Bearer token');
-
-      expect(res.status).toBe(200);
-      expect(res.body).toEqual([]);
-    });
+  it("returns an empty configuration by default", async () => {
+    const res = await request(app).get("/publishers/me/webhooks");
+    expect(res.body).toEqual({ webhookUrl: null, webhookSecret: null, webhookEvents: [], webhookEnabled: false });
   });
 
-  describe('POST /publishers/:id/webhooks', () => {
-    it('requires authentication', async () => {
-      const res = await request(app)
-        .post('/publishers/pub-1/webhooks')
-        .send({ url: 'https://example.com/hook', events: ['publish'] });
-
-      expect(res.status).toBe(401);
+  it("updates the configuration and masks the secret in the response", async () => {
+    const res = await request(app).patch("/publishers/me/webhooks").send({
+      webhookUrl: "https://hooks.example.com/b",
+      webhookSecret: "a-very-long-secret-value",
+      webhookEvents: ["payment.received"],
+      webhookEnabled: true,
     });
-
-    it('rejects missing url', async () => {
-      const res = await request(app)
-        .post('/publishers/pub-1/webhooks')
-        .set('Authorization', 'Bearer token')
-        .send({ events: ['publish'] });
-
-      expect(res.status).toBe(400);
-      expect(mockCreateWebhook).not.toHaveBeenCalled();
-    });
-
-    it('rejects invalid url', async () => {
-      const res = await request(app)
-        .post('/publishers/pub-1/webhooks')
-        .set('Authorization', 'Bearer token')
-        .send({ url: 'not-a-url', events: ['publish'] });
-
-      expect(res.status).toBe(400);
-      expect(mockCreateWebhook).not.toHaveBeenCalled();
-    });
-
-    it('rejects empty events array', async () => {
-      const res = await request(app)
-        .post('/publishers/pub-1/webhooks')
-        .set('Authorization', 'Bearer token')
-        .send({ url: 'https://example.com/hook', events: [] });
-
-      expect(res.status).toBe(400);
-      expect(mockCreateWebhook).not.toHaveBeenCalled();
-    });
-
-    it('creates a webhook and masks the secret', async () => {
-      mockCreateWebhook.mockResolvedValue({
-        id: 'wh-2',
-        publisherId: 'pub-1',
-        url: 'https://example.com/hook',
-        secret: 'generated-secret',
-        events: ['publish'],
-        active: true,
-      });
-
-      const res = await request(app)
-        .post('/publishers/pub-1/webhooks')
-        .set('Authorization', 'Bearer token')
-        .send({ url: 'https://example.com/hook', events: ['publish'] });
-
-      expect(res.status).toBe(201);
-      expect(res.body.id).toBe('wh-2');
-      expect(res.body.secret).not.toBe('generated-secret');
-      expect(res.body.secret).toMatch(/\*+/);
-      expect(mockCreateWebhook).toHaveBeenCalledWith('pub-1', {
-        url: 'https://example.com/hook',
-        events: ['publish'],
-      });
-    });
+    expect(res.status).toBe(200);
+    expect(state.lastSet).toMatchObject({ webhookUrl: "https://hooks.example.com/b", webhookEnabled: true });
+    expect(res.body.webhookSecret).toMatch(/^\*+alue$/);
+    expect(res.body.webhookEvents).toEqual(["payment.received"]);
   });
 
-  describe('PATCH /publishers/:id/webhooks/:webhookId', () => {
-    it('requires authentication', async () => {
-      const res = await request(app)
-        .patch('/publishers/pub-1/webhooks/wh-1')
-        .send({ active: false });
-
-      expect(res.status).toBe(401);
-    });
-
-    it('rejects invalid url updates', async () => {
-      const res = await request(app)
-        .patch('/publishers/pub-1/webhooks/wh-1')
-        .set('Authorization', 'Bearer token')
-        .send({ url: 'bad-url' });
-
-      expect(res.status).toBe(400);
-      expect(mockUpdateWebhook).not.toHaveBeenCalled();
-    });
-
-    it('returns 404 when the webhook does not exist', async () => {
-      mockUpdateWebhook.mockResolvedValue(null);
-
-      const res = await request(app)
-        .patch('/publishers/pub-1/webhooks/missing')
-        .set('Authorization', 'Bearer token')
-        .send({ active: false });
-
-      expect(res.status).toBe(404);
-    });
-
-    it('updates a webhook and masks the secret', async () => {
-      mockUpdateWebhook.mockResolvedValue({
-        id: 'wh-1',
-        publisherId: 'pub-1',
-        url: 'https://example.com/hook',
-        secret: 'existing-secret',
-        events: ['publish'],
-        active: false,
-      });
-
-      const res = await request(app)
-        .patch('/publishers/pub-1/webhooks/wh-1')
-        .set('Authorization', 'Bearer token')
-        .send({ active: false });
-
-      expect(res.status).toBe(200);
-      expect(res.body.active).toBe(false);
-      expect(res.body.secret).not.toBe('existing-secret');
-      expect(res.body.secret).toMatch(/\*+/);
-    });
+  it("disables delivery when the URL is cleared", async () => {
+    state.publisher = basePublisher({ webhookUrl: "https://hooks.example.com/a", webhookEnabled: true });
+    const res = await request(app).patch("/publishers/me/webhooks").send({ webhookUrl: null });
+    expect(res.status).toBe(200);
+    expect(state.lastSet).toEqual({ webhookUrl: null, webhookEnabled: false });
   });
 
-  describe('DELETE /publishers/:id/webhooks/:webhookId', () => {
-    it('requires authentication', async () => {
-      const res = await request(app).delete('/publishers/pub-1/webhooks/wh-1');
-      expect(res.status).toBe(401);
-    });
+  it.each([
+    [{ webhookUrl: "not-a-url" }],
+    [{ webhookUrl: "https://127.0.0.1/hook" }],
+    [{ webhookUrl: "http://hooks.example.com/plain" }],
+    [{ webhookSecret: "short" }],
+    [{ webhookEvents: ["article.published"] }],
+    [{ webhookEnabled: true }],
+    [{}],
+  ])("rejects %j", async (body) => {
+    const res = await request(app).patch("/publishers/me/webhooks").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_ERROR");
+    expect(state.lastSet).toBeNull();
+  });
 
-    it('returns 404 when the webhook does not exist', async () => {
-      mockDeleteWebhook.mockResolvedValue(false);
+  it("requires a configured URL to send a test event", async () => {
+    const res = await request(app).post("/publishers/me/webhooks/test");
+    expect(res.status).toBe(400);
+    expect(mockDeliver).not.toHaveBeenCalled();
+  });
 
-      const res = await request(app)
-        .delete('/publishers/pub-1/webhooks/missing')
-        .set('Authorization', 'Bearer token');
+  it("sends a signed test event", async () => {
+    state.publisher = basePublisher({ webhookUrl: "https://hooks.example.com/a", webhookSecret: "s".repeat(16) });
+    mockDeliver.mockResolvedValue({ delivered: true, attempts: 1, status: 200 });
 
-      expect(res.status).toBe(404);
-    });
+    const res = await request(app).post("/publishers/me/webhooks/test");
 
-    it('deletes a webhook', async () => {
-      mockDeleteWebhook.mockResolvedValue(true);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ delivered: true, attempts: 1, status: 200 });
+    expect(mockDeliver).toHaveBeenCalledWith(
+      { url: "https://hooks.example.com/a", secret: "s".repeat(16) },
+      expect.objectContaining({ event: "webhook.test", data: { publisherId: "pub-1" } }),
+      { maxAttempts: 1 },
+    );
+  });
 
-      const res = await request(app)
-        .delete('/publishers/pub-1/webhooks/wh-1')
-        .set('Authorization', 'Bearer token');
-
-      expect(res.status).toBe(204);
-      expect(mockDeleteWebhook).toHaveBeenCalledWith('pub-1', 'wh-1');
-    });
+  it("returns 502 when the test delivery fails", async () => {
+    state.publisher = basePublisher({ webhookUrl: "https://hooks.example.com/a" });
+    mockDeliver.mockResolvedValue({ delivered: false, attempts: 3, error: "HTTP 500", status: 500 });
+    const res = await request(app).post("/publishers/me/webhooks/test");
+    expect(res.status).toBe(502);
+    expect(res.body.delivered).toBe(false);
   });
 });

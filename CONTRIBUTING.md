@@ -5,14 +5,14 @@ Welcome! We're building a Stellar-powered marketplace for digital resources. Thi
 ## Local Development
 
 ### Prerequisites
-- Node.js 20+
+- Node.js 24+ (npm 11)
 - Docker & Docker Compose (for PostgreSQL)
 
 ### Setup
 
 ```bash
 # Install dependencies
-npm install
+npm ci
 
 # Copy environment variables
 cp .env.example .env

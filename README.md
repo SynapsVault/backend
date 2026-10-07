@@ -3,8 +3,8 @@
   <p><strong>Express API server for the SynapsVault knowledge vault marketplace</strong></p>
   <p>
     <a href="https://github.com/SynapsVault/backend/actions"><img src="https://github.com/SynapsVault/backend/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-    <img src="https://img.shields.io/badge/Node.js-20-green" alt="Node.js">
-    <img src="https://img.shields.io/badge/TypeScript-5-blue" alt="TypeScript">
+    <img src="https://img.shields.io/badge/Node.js-24-green" alt="Node.js">
+    <img src="https://img.shields.io/badge/TypeScript-6-blue" alt="TypeScript">
     <img src="https://img.shields.io/badge/Stellar-x402-7D00FF" alt="Stellar">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
   </p>
@@ -32,10 +32,10 @@ SynapsVault-backend is the Express.js API powering the SynapsVault marketplace. 
                     │                                         │
   Frontend ──────►  │  Express app                            │
   (React/Vite)      │  ├── /resources    CRUD + catalog       │
-                    │  ├── /verify       x402 payment check   │
+                    │  ├── /verify-content  AI originality    │
                     │  ├── /publishers   profile + keys       │
                     │  ├── /registry     on-chain status      │
-                    │  ├── /payments     purchase history     │
+                    │  ├── /payments     receipts + history   │
                     │  ├── /admin        protected stats      │
                     │  ├── /health       k8s probes           │
                     │  └── /docs         OpenAPI + Swagger    │
@@ -61,77 +61,109 @@ SynapsVault-backend is the Express.js API powering the SynapsVault marketplace. 
 
 ## Quick start
 
+Requires **Node.js 24** (npm 11) and PostgreSQL 16.
+
 ```bash
 git clone https://github.com/SynapsVault/backend SynapsVault-backend
 cd SynapsVault-backend
-npm install
+npm ci
 
 cp .env.example .env
-# Fill in DATABASE_URL, SUPABASE_*, STELLAR_*, ADMIN_API_KEY
+# Fill in the required values (marked "required" in .env.example). The server
+# validates config on boot and exits listing anything missing.
 
-# Run database migrations
-npm run db:migrate
+npm run db:migrate   # apply drizzle migrations
+npm run dev          # dev server with hot reload (default port 4021)
 
-# Start dev server (hot reload)
-npm run dev
-
-# Run tests
-npm run test
-
-# Production build
+npm run typecheck
+npm test
 npm run build && npm start
 ```
 
-## Docker (recommended for production)
+## Docker
 
 ```bash
-# Single container
+# Single container (listens on 3000; run migrations first)
 docker build -t synapsvault-backend .
 docker run --env-file .env -p 3000:3000 synapsvault-backend
 
-# Full stack (API + Postgres)
+# Full stack (API + Postgres), using values from .env
 docker compose up
 ```
 
 ## API reference
 
-Full OpenAPI spec at `/docs` when running.
+The OpenAPI 3 spec is served at `/openapi.json`, with Swagger UI at `/docs`.
 
 | Method | Route | Auth | Description |
 |---|---|---|---|
-| `GET` | `/health` | — | Liveness + readiness |
-| `GET` | `/metrics` | — | Prometheus metrics |
-| `GET` | `/resources` | — | Browse catalog |
-| `POST` | `/resources` | API key | Publish resource |
-| `GET` | `/resources/:id` | x402 | Download/access (paywall) |
-| `PATCH` | `/resources/:id/price` | API key | Update price |
-| `POST` | `/resources/:id/register` | API key | Register on-chain |
-| `POST` | `/resources/:id/delist` | API key | Delist resource |
-| `GET` | `/publishers/:id` | — | Publisher profile |
-| `POST` | `/verify` | — | Verify x402 payment |
-| `GET` | `/payments` | — | Purchase history |
+| `GET` | `/health`, `/health/ready` | — | Liveness / readiness (DB + Soroban RPC) |
+| `GET` | `/metrics` | Bearer `METRICS_TOKEN` | Prometheus metrics |
+| `GET` | `/resources` | — | Catalog: search, price/type/status filters, sort, pagination |
+| `POST` | `/resources` | API key | Publish a file (multipart) or link resource |
+| `GET` | `/resources/:id/meta` | — | Public preview |
+| `GET` | `/resources/:id` | x402 | Pay and access the resource |
+| `DELETE` | `/resources/:id` | API key | Delist own resource |
+| `GET` | `/resources/:id/register/prepare` | API key | Unsigned on-chain register tx |
+| `POST` | `/resources/:id/register` | API key | Submit signed register tx |
+| `POST` | `/resources/:id/price[/prepare]` | API key | Update on-chain price |
+| `POST` | `/resources/:id/ownership[/prepare]` | API key | Transfer on-chain ownership |
+| `POST` | `/verify-content` | x402 | AI originality check |
+| `GET` | `/agent/status` | — | Verification agent stats |
+| `POST` | `/publishers` | — | Register; returns the API key once |
+| `GET` | `/publishers/me[/resources\|/analytics]` | API key | Profile, resources, earnings |
+| `GET` `PATCH` | `/publishers/me/rate-limit` | API key | View / override own rate limit |
+| `GET` `PATCH` | `/publishers/me/webhooks` | API key | Webhook URL, secret, events |
+| `POST` | `/publishers/me/webhooks/test` | API key | Send a signed test event |
+| `GET` | `/publishers/leaderboard` | — | Creator leaderboard |
+| `GET` | `/payments/:id/receipt` | — | Payment receipt |
+| `GET` | `/buyers/:address/payments` | — | Buyer purchase history |
 | `GET` | `/registry/status` | — | On-chain registry stats |
-| `GET` | `/admin/stats` | Admin key | Platform metrics |
+| `GET` | `/admin/stats`, `/admin/audit` | Admin key | Platform metrics, payment audit |
 | `POST` | `/admin/delist/:id` | Admin key | Force delist |
-| `GET` | `/admin/audit` | Admin key | Payment audit log |
-| `GET` | `/docs` | — | Swagger UI |
+
+### Errors
+
+Every error response has the same shape:
+
+```json
+{ "error": "Resource not found", "code": "NOT_FOUND", "requestId": "…" }
+```
+
+`code` is one of `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`,
+`CONFLICT`, `PAYLOAD_TOO_LARGE`, `RATE_LIMITED`, `INTERNAL_ERROR`,
+`UPSTREAM_ERROR`, `SERVICE_UNAVAILABLE` or `GATEWAY_TIMEOUT`. Validation errors
+add field-level `details`. The `requestId` matches the `x-request-id` header.
+
+### Webhooks
+
+Publishers configure one endpoint with `PATCH /publishers/me/webhooks`
+(`webhookUrl`, `webhookSecret`, `webhookEvents`, `webhookEnabled`). Events:
+`resource.purchased`, `payment.received`, `resource.listed`, `resource.delisted`.
+Deliveries are `POST { event, timestamp, data }`. When a secret is set,
+`X-SynapsVault-Signature` holds the hex HMAC-SHA256 of the raw body:
+
+```js
+const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+```
+
+Failures are retried with exponential backoff (`WEBHOOK_MAX_ATTEMPTS`).
+Private and loopback URLs are rejected.
 
 ## Environment variables
 
 See [`.env.example`](./.env.example) for the full list and descriptions.
 
-## Workflow / CI
+## CI
 
-```
-Push to feat/* ──► CI (typecheck + test + docker build)
-                         │
-Merge to dev   ──► CI + staging deploy
-                         │
-Merge to main  ──► CI + Docker push to GHCR + production deploy
-```
+Every push and PR to `main`/`dev` runs [`ci.yml`](.github/workflows/ci.yml):
 
-Configure these GitHub secrets for CD to work:
-- `DEPLOY_WEBHOOK_URL` — your Railway/Render deploy hook URL
+1. **Typecheck & Test**: `npm ci`, `npm run typecheck`, `npm test`, `npm run build`
+2. **Docker build & smoke test**: builds the image, applies migrations to a
+   Postgres service, boots the container and checks key endpoints.
+
+[`catalog-seed.yml`](.github/workflows/catalog-seed.yml) runs weekly (or on
+demand) to seed a testnet catalog and verify it end to end.
 
 ## Repo siblings
 

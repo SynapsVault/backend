@@ -66,6 +66,7 @@ vi.mock("../middleware/dynamicPaywall.js", () => ({
 }));
 
 vi.mock("../lib/logger.js", () => ({
+  getRequestId: () => undefined,
   getLogger: () => ({
     error: vi.fn(),
     warn: vi.fn(),
@@ -74,11 +75,13 @@ vi.mock("../lib/logger.js", () => ({
 }));
 
 import resourceRouter from "./resources.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 
 function createTestApp() {
   const app = express();
   app.use(express.json());
   app.use(resourceRouter);
+  app.use(errorHandler);
   return app;
 }
 

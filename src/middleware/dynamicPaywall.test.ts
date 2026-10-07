@@ -23,6 +23,7 @@ vi.mock("../lib/x402.js", () => ({
   sharedX402ResourceServer: {},
 }));
 vi.mock("../lib/logger.js", () => ({
+  getRequestId: () => undefined,
   getLogger: () => ({
     error: vi.fn(),
     warn: vi.fn(),

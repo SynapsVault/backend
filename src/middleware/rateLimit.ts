@@ -109,31 +109,46 @@ export function createWalletRateLimiter(
   });
 }
 
-export interface PublisherRateLimiterConfig {
-  PUBLISHER_RATE_LIMIT_RPM_DEFAULT: number;
-  PUBLISHER_RATE_LIMIT_MAX_RPM: number;
+export interface PublisherRateLimiterOptions {
+  store: RateLimitStore;
+  /** Requests per window when the publisher has no override. */
+  defaultRpm: number;
+  /** Hard cap applied to any per-publisher override. */
+  maxRpm: number;
+  windowMs?: number;
+  limiterName?: string;
 }
 
-export function createPublisherRateLimiter(
-  store: RateLimitStore,
-  config: PublisherRateLimiterConfig,
-  windowMs: number = 60_000,
-  limiterName?: string,
-): RequestHandler {
-  return createRateLimiter({
-    store,
-    windowMs,
-    limiterName: limiterName ?? "publisher_rpm",
-    skip: (req) => !req.publisher,
-    max: config.PUBLISHER_RATE_LIMIT_RPM_DEFAULT,
-    keyGenerator: (req) => {
-      const publisher = req.publisher;
-      if (!publisher) {
-        return `publisher:ip:${clientIp(req)}`;
+/**
+ * Per-publisher limiter. Must run after `apiKeyAuth`; honours the publisher's
+ * `rateLimitRpm` override (capped at `maxRpm`) and skips unauthenticated requests.
+ */
+export function createPublisherRateLimiter(options: PublisherRateLimiterOptions): RequestHandler {
+  const { store, defaultRpm, maxRpm, windowMs = 60_000, limiterName = "publisher_rpm" } = options;
+
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const publisher = req.publisher;
+    if (!publisher) {
+      next();
+      return;
+    }
+
+    const limit = Math.min(publisher.rateLimitRpm ?? defaultRpm, maxRpm);
+    const key = `publisher:${publisher.id}`;
+
+    try {
+      const result = await store.consume(key, limit, windowMs);
+      sendRateLimitHeaders(res, result.limit, result.remaining, result.resetAt);
+      if (!result.allowed) {
+        sendTooManyRequests(res, result.retryAfterSeconds ?? Math.ceil(windowMs / 1000), limiterName);
+        return;
       }
-      return `publisher:${publisher.id}`;
-    },
-  });
+      next();
+    } catch (err) {
+      getLogger().warn({ event: "rate_limit_store_error", err, key }, "rate limit store error");
+      next();
+    }
+  };
 }
 
 export function extractPayerFromPaymentHeader(req: Request): string | undefined {

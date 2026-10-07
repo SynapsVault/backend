@@ -44,10 +44,10 @@ export const publishWalletRateLimit: RequestHandler = createWalletRateLimiter(
   "publish_wallet",
 );
 
-export const publisherRateLimit: RequestHandler = createPublisherRateLimiter(
+/** Per-publisher limit for authenticated publisher routes (run after apiKeyAuth). */
+export const publisherRateLimit: RequestHandler = createPublisherRateLimiter({
   store,
-  "publisher",
-  config.RATE_LIMIT_PUBLISHER_MAX,
-  config.RATE_LIMIT_PUBLISHER_WINDOW_MS,
-  "publisher",
-);
+  defaultRpm: config.PUBLISHER_RATE_LIMIT_RPM_DEFAULT,
+  maxRpm: config.PUBLISHER_RATE_LIMIT_MAX_RPM,
+  windowMs: config.PUBLISHER_RATE_LIMIT_WINDOW_MS,
+});

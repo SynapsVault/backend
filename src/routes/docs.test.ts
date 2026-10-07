@@ -1,48 +1,69 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
-import docsRoutes from './docs';
+import { describe, it, expect } from "vitest";
+import express from "express";
+import request from "supertest";
+import docsRouter from "./docs.js";
+import { openApiSpec } from "../openapi.js";
 
-describe('docs routes', () => {
-  let app: FastifyInstance;
+const app = express().use(docsRouter);
 
-  beforeAll(async () => {
-    app = Fastify();
-    await app.register(docsRoutes);
-    await app.ready();
+function collectRefs(node: unknown, refs: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    node.forEach((child) => collectRefs(child, refs));
+  } else if (node && typeof node === "object") {
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "$ref" && typeof value === "string") refs.push(value);
+      else collectRefs(value, refs);
+    }
+  }
+  return refs;
+}
+
+describe("docs routes", () => {
+  it("GET /openapi.json returns a valid OpenAPI 3 document", async () => {
+    const res = await request(app).get("/openapi.json");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.headers["cache-control"]).toContain("max-age");
+    expect(res.body.openapi).toMatch(/^3\./);
+    expect(res.body.info.title).toBeTypeOf("string");
+    expect(Object.keys(res.body.paths).length).toBeGreaterThan(0);
   });
 
-  afterAll(async () => {
-    await app.close();
+  it("GET /docs/json serves the same document", async () => {
+    const [canonical, alias] = await Promise.all([
+      request(app).get("/openapi.json"),
+      request(app).get("/docs/json"),
+    ]);
+    expect(alias.status).toBe(200);
+    expect(alias.body).toEqual(canonical.body);
   });
 
-  it('GET /openapi.json returns a valid OpenAPI 3.0 document', async () => {
-    const response = await app.inject({
-      method: 'GET',
-      url: '/openapi.json',
+  it("GET /docs serves the Swagger UI page", async () => {
+    const res = await request(app).get("/docs");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.text).toContain("swagger-ui");
+    expect(res.text).toContain("/openapi.json");
+  });
+
+  it("every $ref resolves to a defined component", () => {
+    const spec = openApiSpec as unknown as { components: Record<string, Record<string, unknown>> };
+    const missing = collectRefs(openApiSpec).filter((ref) => {
+      const [, , section, name] = ref.split("/");
+      return !spec.components?.[section]?.[name];
     });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.headers['content-type']).toContain('application/json');
-
-    const document = JSON.parse(response.body);
-
-    expect(document).toBeTypeOf('object');
-    expect(document.openapi).toBeTypeOf('string');
-    expect(document.openapi).toMatch(/^3\.0\.\d+$/);
-    expect(document.info).toBeTypeOf('object');
-    expect(document.info.title).toBeTypeOf('string');
-    expect(document.info.version).toBeTypeOf('string');
-    expect(document.paths).toBeTypeOf('object');
+    expect(missing).toEqual([]);
   });
 
-  it('GET /docs returns HTML containing the Swagger UI bundle reference', async () => {
-    const response = await app.inject({
-      method: 'GET',
-      url: '/docs',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.headers['content-type']).toContain('text/html');
-    expect(response.body).toContain('swagger-ui');
+  it("documents every operation with a unique operationId", () => {
+    const ids: string[] = [];
+    for (const methods of Object.values(openApiSpec.paths as Record<string, Record<string, { operationId?: string }>>)) {
+      for (const op of Object.values(methods)) {
+        expect(op.operationId, JSON.stringify(op).slice(0, 80)).toBeTypeOf("string");
+        ids.push(op.operationId!);
+      }
+    }
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });

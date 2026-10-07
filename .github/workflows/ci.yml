@@ -6,62 +6,104 @@ on:
   pull_request:
     branches: [main, dev]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: Test & Lint
+    name: Typecheck & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: |
+          npm run typecheck
+          npm run typecheck:scripts
+
+      # Unit tests mock the DB and external services; src/test/setupEnv.ts
+      # supplies placeholder config.
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Docker build & smoke test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: synapse
           POSTGRES_PASSWORD: synapse
-          POSTGRES_DB: synapsvault_test
+          POSTGRES_DB: synapsvault
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
           --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
+      - name: Build image
+        run: docker build -t synapsvault-backend:ci .
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Unit tests
+      - name: Apply migrations
         env:
-          DATABASE_URL: postgres://synapse:synapse@localhost:5432/synapsvault_test
-          NODE_ENV: test
-          STELLAR_NETWORK: testnet
-          STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
-          STELLAR_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
-          STELLAR_CONTRACT_VAULT_REGISTRY: CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H
-          STELLAR_CONTRACT_ACCESS_LEASE: CDQZBCEPN6RCJAQLEKB3ZRNLUZXDCCFMVIS6STZNAOEAQLXD3FUBNQGX
-          STELLAR_CONTRACT_SUBSCRIPTION: CCCE6Q6WHDICGMQWXXXMM6X7YDGK3BXU4JNQJNSIA6XQRC52MQL42CD6
-          ADMIN_API_KEY: ci-test-key
-          SUPABASE_URL: https://placeholder.supabase.co
-          SUPABASE_SERVICE_ROLE_KEY: placeholder
-        run: npm run test
+          PGPASSWORD: synapse
+        run: |
+          for f in $(ls drizzle/*.sql | sort); do
+            psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U synapse -d synapsvault -q -f "$f"
+          done
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: npm install --legacy-peer-deps
-      - run: npm run build
-      - name: Docker build smoke test
-        run: docker build -t synapsvault-backend:ci . || true
+      - name: Start container
+        run: |
+          # Throwaway, unfunded keypair generated per run.
+          SECRET=$(docker run --rm synapsvault-backend:ci node -e \
+            "console.log(require('@stellar/stellar-sdk').Keypair.random().secret())")
+          docker run -d --name api --network host \
+            -e DATABASE_URL=postgres://synapse:synapse@127.0.0.1:5432/synapsvault \
+            -e PAY_TO=GDEJJLXV2CNHF5HEGX34MU4G6L4PRVUAGD4ANF77ZDYTQJKSDSDYVVI6 \
+            -e AGENT_SECRET_KEY="$SECRET" \
+            -e REGISTRY_SECRET_KEY="$SECRET" \
+            -e VAULT_REGISTRY_CONTRACT_ID=CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H \
+            -e REGISTRY_CONTRACT_ID=CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H \
+            -e OPENROUTER_API_KEY=ci-placeholder \
+            -e SUPABASE_URL=https://placeholder.supabase.co \
+            -e SUPABASE_SERVICE_KEY=ci-placeholder \
+            -e ADMIN_API_KEY=ci-admin-key \
+            synapsvault-backend:ci
+
+      - name: Smoke test
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/health && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/health
+          curl -fsS http://127.0.0.1:3000/openapi.json > /dev/null
+          curl -fsS "http://127.0.0.1:3000/resources?limit=1"
+          curl -fsS http://127.0.0.1:3000/admin/stats -H "X-Admin-Key: ci-admin-key"
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/publishers/me)
+          test "$code" = "401"
+
+      - name: Container logs
+        if: always()
+        run: docker logs api || true

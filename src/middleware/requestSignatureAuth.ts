@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
-import { AppError } from "../utils/AppError.js";
+import { AppError } from "../lib/errors.js";
 import {
   EMPTY_BODY_HASH,
   getRequestPath,
@@ -11,29 +11,11 @@ import {
 } from "../utils/requestSignature.js";
 
 /**
- * In-memory replay-protection cache keyed by `${signature}:${timestamp}`.
- * Entries expire after the signature skew window, after which the same
- * signature+timestamp pair is no longer considered a replay.
+ * Signatures accepted within the skew window, used for replay protection.
+ * In-memory, so it only protects a single instance; only *valid* signatures
+ * are recorded, so the set can't be flooded with garbage.
  */
 const seenSignatures = new Map<string, number>();
-
-function pruneSeenSignatures(now: number): void {
-  for (const [key, expiresAt] of seenSignatures) {
-    if (expiresAt <= now) {
-      seenSignatures.delete(key);
-    }
-  }
-}
-
-function isReplay(key: string, now: number): boolean {
-  pruneSeenSignatures(now);
-  const expiresAt = seenSignatures.get(key);
-  if (expiresAt !== undefined && expiresAt > now) {
-    return true;
-  }
-  seenSignatures.set(key, now + config.SIGNATURE_MAX_SKEW_MS);
-  return false;
-}
 
 declare global {
   namespace Express {
@@ -79,51 +61,67 @@ export function requestSignatureAuth(req: Request, res: Response, next: NextFunc
     return;
   }
 
+  const fail = (message: string) => next(new AppError("UNAUTHORIZED", message));
+
   const apiKey = req.headers["x-api-key"];
   if (typeof apiKey !== "string") {
-    throw new AppError("UNAUTHORIZED", "Missing x-api-key header");
+    fail("Missing x-api-key header");
+    return;
   }
 
   const timestampHeader = req.headers["x-timestamp"];
   const signatureHeader = req.headers["x-signature"];
-
-  if (!timestampHeader || typeof timestampHeader !== "string") {
-    throw new AppError("UNAUTHORIZED", "Missing X-Timestamp header");
-  }
-  if (!signatureHeader || typeof signatureHeader !== "string") {
-    throw new AppError("UNAUTHORIZED", "Missing X-Signature header");
+  if (
+    !timestampHeader || typeof timestampHeader !== "string" ||
+    !signatureHeader || typeof signatureHeader !== "string"
+  ) {
+    fail("Missing request signature headers");
+    return;
   }
 
   const timestampSeconds = Number(timestampHeader);
-  if (!isTimestampWithinSkew(timestampSeconds, Date.now(), config.SIGNATURE_MAX_SKEW_MS)) {
-    throw new AppError("UNAUTHORIZED", "Request timestamp outside allowed window");
+  if (!/^\d+$/.test(timestampHeader) || !Number.isSafeInteger(timestampSeconds)) {
+    fail("Invalid request timestamp");
+    return;
+  }
+  const now = Date.now();
+  if (!isTimestampWithinSkew(timestampSeconds, now, config.SIGNATURE_MAX_SKEW_MS)) {
+    fail("Request timestamp outside allowed window");
+    return;
   }
 
-  const nonceHeader = req.headers["x-nonce"];
-  const nonce = typeof nonceHeader === "string" ? nonceHeader : undefined;
-  const replayKey = `${signatureHeader}:${timestampHeader}${nonce ? `:${nonce}` : ""}`;
-  if (isReplay(replayKey, Date.now())) {
-    throw new AppError("UNAUTHORIZED", "Request signature has already been used");
-  }
-
-  const bodyHash = resolveBodyHash(req);
-  const path = getRequestPath(req.originalUrl);
   const idempotencyHeader = req.headers["idempotency-key"];
-  const idempotencyKey = typeof idempotencyHeader === "string" ? idempotencyHeader : undefined;
-
   const valid = verifyRequestSignature({
     secret: apiKey,
     method: req.method,
-    path,
+    path: getRequestPath(req.originalUrl),
     timestamp: timestampHeader,
-    bodyHash,
-    idempotencyKey,
+    bodyHash: resolveBodyHash(req),
+    idempotencyKey: typeof idempotencyHeader === "string" ? idempotencyHeader : undefined,
     signature: signatureHeader,
   });
-
   if (!valid) {
-    throw new AppError("UNAUTHORIZED", "Invalid request signature");
+    fail("Invalid request signature");
+    return;
   }
 
+  pruneExpired(seenSignatures, now);
+  if (seenSignatures.has(signatureHeader)) {
+    fail("Request signature already used");
+    return;
+  }
+  seenSignatures.set(signatureHeader, now + config.SIGNATURE_MAX_SKEW_MS);
+
   next();
+}
+
+/** Test helper — forget previously accepted signatures. */
+export function __resetSignatureReplayCache(): void {
+  seenSignatures.clear();
+}
+
+function pruneExpired(entries: Map<string, number>, now: number): void {
+  for (const [key, expiresAt] of entries) {
+    if (expiresAt <= now) entries.delete(key);
+  }
 }

@@ -34,12 +34,79 @@ function applyNetworkEnvDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     NETWORK: env.NETWORK ?? preset.x402Network,
     SOROBAN_RPC_URL: env.SOROBAN_RPC_URL ?? preset.sorobanRpcUrl,
     USDC_CONTRACT_ID: env.USDC_CONTRACT_ID ?? preset.usdcSacContractId,
+    // Accept Supabase's own name for the key (used by docker-compose and CI).
+    SUPABASE_SERVICE_KEY: env.SUPABASE_SERVICE_KEY ?? env.SUPABASE_SERVICE_ROLE_KEY,
   };
 }
 
-function validateNetworkConfig(_input: Record<string, unknown>): string[] {
-  return []; // Network validation is handled via env var schema below
+interface NetworkValidationIssue {
+  field: string;
+  message: string;
 }
+
+function inferNetworkFromX402(network: string): StellarDeploymentNetwork | undefined {
+  const normalized = network.trim();
+  if (normalized === "stellar:testnet") return "testnet";
+  if (normalized === "stellar:pubnet" || normalized === "stellar:mainnet") return "mainnet";
+  return undefined;
+}
+
+function inferNetworkFromRpcUrl(rpcUrl: string): StellarDeploymentNetwork | undefined {
+  try {
+    const host = new URL(rpcUrl).hostname.toLowerCase();
+    if (host.includes("testnet")) return "testnet";
+    if (host === "soroban.stellar.org" || host === "mainnet.sorobanrpc.com") return "mainnet";
+  } catch {
+    // invalid URL — reported below
+  }
+  return undefined;
+}
+
+/**
+ * Catches cross-network misconfiguration (e.g. mainnet x402 network with a
+ * testnet RPC). Custom RPC hosts whose network can't be inferred are allowed.
+ */
+function validateNetworkConfig(input: {
+  stellarNetwork: StellarDeploymentNetwork;
+  x402Network: string;
+  sorobanRpcUrl: string;
+}): NetworkValidationIssue[] {
+  const issues: NetworkValidationIssue[] = [];
+
+  const x402Network = inferNetworkFromX402(input.x402Network);
+  if (!x402Network) {
+    issues.push({
+      field: "NETWORK",
+      message: `Unsupported x402 network "${input.x402Network}". Use stellar:testnet or stellar:pubnet.`,
+    });
+  } else if (x402Network !== input.stellarNetwork) {
+    issues.push({
+      field: "NETWORK",
+      message: `NETWORK=${input.x402Network} does not match STELLAR_NETWORK=${input.stellarNetwork}.`,
+    });
+  }
+
+  if (!URL.canParse(input.sorobanRpcUrl)) {
+    issues.push({ field: "SOROBAN_RPC_URL", message: "SOROBAN_RPC_URL is not a valid URL." });
+  } else {
+    const rpcNetwork = inferNetworkFromRpcUrl(input.sorobanRpcUrl);
+    if (rpcNetwork && rpcNetwork !== input.stellarNetwork) {
+      issues.push({
+        field: "SOROBAN_RPC_URL",
+        message: `SOROBAN_RPC_URL points to ${rpcNetwork} but STELLAR_NETWORK=${input.stellarNetwork}.`,
+      });
+    }
+  }
+
+  return issues;
+}
+
+/** Parses "true"/"false"/"1"/"0" env flags (z.coerce.boolean treats "false" as true). */
+const envFlag = (defaultValue: boolean) =>
+  z
+    .enum(["true", "false", "1", "0", "yes", "no", ""])
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? defaultValue : v === "true" || v === "1" || v === "yes"));
 import { rootLogger } from "./lib/logger.js";
 
 const envWithDefaults = applyNetworkEnvDefaults(process.env);
@@ -128,7 +195,7 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().optional(),
 
   // Optional HMAC-SHA256 request signatures for publisher mutations (off by default).
-  REQUIRE_REQUEST_SIGNATURE: z.coerce.boolean().default(false),
+  REQUIRE_REQUEST_SIGNATURE: envFlag(false),
   // Max clock skew for X-Timestamp when signatures are required (default 5 minutes).
   SIGNATURE_MAX_SKEW_MS: z.coerce.number().default(300_000),
 
@@ -149,8 +216,8 @@ const envSchema = z.object({
 
   // Postgres connection pool tuning.
   DB_POOL_MAX: z.coerce.number().int().min(1).default(10),
-  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(20_000),
-  DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
+  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
+  DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(10_000),
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 });
 
@@ -169,8 +236,6 @@ const networkIssues = validateNetworkConfig({
   stellarNetwork,
   x402Network: parsed.data.NETWORK,
   sorobanRpcUrl: parsed.data.SOROBAN_RPC_URL,
-  usdcSacContractId: parsed.data.USDC_CONTRACT_ID,
-  registryContractId: parsed.data.VAULT_REGISTRY_CONTRACT_ID,
 });
 
 if (networkIssues.length > 0) {
