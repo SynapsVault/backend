@@ -1,5 +1,7 @@
-import helmet from "helmet";
 import type { RequestHandler } from "express";
+// Use named import to work around TypeScript/Vercel resolution issues with default export
+import * as helmetModule from "helmet";
+const helmet = helmetModule.default || helmetModule;
 
 // Swagger UI (mounted at /docs) is loaded from the unpkg CDN and relies on an
 // inline bootstrap script plus the styles it injects at runtime. The default
