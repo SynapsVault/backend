@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { parseAllowedOrigins, X402_ALLOWED_HEADERS, X402_EXPOSED_HEADERS } from "./cors.js";
+import { isOriginAllowed, parseAllowedOrigins, X402_ALLOWED_HEADERS, X402_EXPOSED_HEADERS } from "./cors.js";
 
 vi.mock("./config.js", () => ({
   config: {
@@ -23,6 +23,21 @@ describe("parseAllowedOrigins", () => {
     expect(parseAllowedOrigins("  ", "https://app.example.com")).toEqual([
       "https://app.example.com",
     ]);
+  });
+});
+
+describe("isOriginAllowed", () => {
+  it("ignores trailing slashes in configured origins", () => {
+    expect(parseAllowedOrigins("https://app.example.com/", "x")).toEqual(["https://app.example.com"]);
+    expect(isOriginAllowed("https://app.example.com", ["https://app.example.com"])).toBe(true);
+  });
+
+  it("supports host wildcards", () => {
+    const allowed = ["https://*.vercel.app"];
+    expect(isOriginAllowed("https://synapsvault-git-main.vercel.app", allowed)).toBe(true);
+    expect(isOriginAllowed("http://synapsvault.vercel.app", allowed)).toBe(false);
+    expect(isOriginAllowed("https://evilvercel.app", allowed)).toBe(false);
+    expect(isOriginAllowed("https://vercel.app.evil.com", allowed)).toBe(false);
   });
 });
 
@@ -55,8 +70,9 @@ describe("createCorsOptions", () => {
     });
 
     await new Promise<void>((resolve) => {
-      origin("https://evil.example.com", (err) => {
-        expect(err).toBeInstanceOf(Error);
+      origin("https://evil.example.com", (err, allow) => {
+        expect(err).toBeNull();
+        expect(allow).toBe(false);
         resolve();
       });
     });
