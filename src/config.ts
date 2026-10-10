@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod/v4";
+import { StrKey } from "@stellar/stellar-sdk";
 // Inlined from @synapsvault/registry-client (local package — avoids runtime resolution issues)
 type StellarDeploymentNetwork = "testnet" | "mainnet";
 
@@ -25,13 +26,52 @@ function resolveStellarNetwork(value: string | undefined): StellarDeploymentNetw
   return v === "mainnet" || v === "pubnet" || v === "public" ? "mainnet" : "testnet";
 }
 
+function cleanEnvValue(value: string): string {
+  const trimmed = value.trim();
+  const quoted = trimmed.match(/^(["'])(.*)\1$/s);
+  return (quoted ? quoted[2]! : trimmed).trim();
+}
+
+/** Public URLs commonly entered without a scheme (e.g. "app.vercel.app"). */
+const SCHEME_DEFAULTED_URLS = ["WEB_APP_URL", "BASE_URL", "SUPABASE_URL", "SOROBAN_RPC_URL"] as const;
+
+const stellarSecret = (name: string) =>
+  z
+    .string({ error: `${name} is required` })
+    .min(1, `${name} is required`)
+    .refine(StrKey.isValidEd25519SecretSeed, `${name} must be a Stellar secret key (starts with S, 56 chars)`);
+
+const stellarAccount = (name: string) =>
+  z
+    .string({ error: `${name} is required` })
+    .min(1, `${name} is required`)
+    .refine(StrKey.isValidEd25519PublicKey, `${name} must be a Stellar public key (starts with G, 56 chars)`);
+
+const stellarContract = (name: string) =>
+  z
+    .string({ error: `${name} is required` })
+    .min(1, `${name} is required`)
+    .refine(StrKey.isValidContract, `${name} must be a Soroban contract id (starts with C, 56 chars)`);
+
+const httpUrl = (name: string) =>
+  z
+    .string({ error: `${name} is required` })
+    .refine((v) => /^https?:\/\//i.test(v) && URL.canParse(v), `${name} must be an http(s) URL`);
+
 function applyNetworkEnvDefaults(rawEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Hosting dashboards (Railway, Vercel) make it easy to save a variable with
   // an empty value; treat those as unset so defaults apply and optional URL
   // fields (REDIS_URL, SENTRY_DSN) don't fail validation and crash the boot.
+  // Values pasted with surrounding quotes or whitespace are cleaned up too.
   const env = Object.fromEntries(
-    Object.entries(rawEnv).filter(([, value]) => value === undefined || value.trim() !== ""),
+    Object.entries(rawEnv)
+      .map(([key, value]) => [key, value === undefined ? value : cleanEnvValue(value)] as const)
+      .filter(([, value]) => value !== ""),
   ) as NodeJS.ProcessEnv;
+  for (const key of SCHEME_DEFAULTED_URLS) {
+    const value = env[key];
+    if (value && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) env[key] = `https://${value}`;
+  }
   const network = resolveStellarNetwork(env.STELLAR_NETWORK);
   const preset = NETWORK_PRESETS[network];
   return {
@@ -131,21 +171,26 @@ const envSchema = z.object({
   STELLAR_NETWORK: z.enum(["testnet", "mainnet"]).default("testnet"),
   NETWORK: z.string().min(1),
   FACILITATOR_URL: z.string().default("https://www.x402.org/facilitator"),
-  PAY_TO: z.string().min(1, "PAY_TO (platform wallet address) is required"),
-  AGENT_SECRET_KEY: z.string().min(1, "AGENT_SECRET_KEY (platform agent secret) is required"),
+  PAY_TO: stellarAccount("PAY_TO (platform wallet address)"),
+  AGENT_SECRET_KEY: stellarSecret("AGENT_SECRET_KEY (platform agent secret)"),
   USDC_CONTRACT_ID: z.string().min(1),
 
   // Soroban / vault-registry
   SOROBAN_RPC_URL: z.string().min(1, "SOROBAN_RPC_URL is required"),
-  VAULT_REGISTRY_CONTRACT_ID: z.string().min(1, "VAULT_REGISTRY_CONTRACT_ID is required"),
+  VAULT_REGISTRY_CONTRACT_ID: stellarContract("VAULT_REGISTRY_CONTRACT_ID / REGISTRY_CONTRACT_ID"),
 
   // OpenRouter
   OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
   OPENROUTER_MODEL: z.string().default("anthropic/claude-sonnet-4"),
 
   // Supabase
-  DATABASE_URL: z.string().min(1, "DATABASE_URL (Supabase Postgres connection string) is required"),
-  SUPABASE_URL: z.string().min(1, "SUPABASE_URL is required"),
+  DATABASE_URL: z
+    .string({ error: "DATABASE_URL (Postgres connection string) is required" })
+    .refine(
+      (v) => /^postgres(ql)?:\/\//i.test(v) && URL.canParse(v),
+      "DATABASE_URL must be a postgres:// or postgresql:// URL (URL-encode special characters in the password)",
+    ),
+  SUPABASE_URL: httpUrl("SUPABASE_URL"),
   SUPABASE_SERVICE_KEY: z.string().min(1, "SUPABASE_SERVICE_KEY is required"),
   SUPABASE_STORAGE_BUCKET: z.string().default("resources"),
 
@@ -161,10 +206,8 @@ const envSchema = z.object({
     ),
 
   // Soroban registry
-  REGISTRY_CONTRACT_ID: z.string().min(1, "REGISTRY_CONTRACT_ID is required"),
-  REGISTRY_SECRET_KEY: z
-    .string()
-    .min(1, "REGISTRY_SECRET_KEY (deployer / owner secret) is required"),
+  REGISTRY_CONTRACT_ID: stellarContract("REGISTRY_CONTRACT_ID / VAULT_REGISTRY_CONTRACT_ID"),
+  REGISTRY_SECRET_KEY: stellarSecret("REGISTRY_SECRET_KEY (deployer / owner secret)"),
 
   // Metrics endpoint token — if set, requests to /metrics must supply it via
   // Bearer auth or ?token=. If unset, the endpoint is disabled.
@@ -257,7 +300,7 @@ if (networkIssues.length > 0) {
     "inconsistent Stellar network configuration",
   );
   for (const issue of networkIssues) {
-    rootLogger.error({ field: issue.field }, issue.message);
+    console.error(`[config] ${issue.field}: ${issue.message}`);
   }
   process.exit(1);
 }
