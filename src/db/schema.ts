@@ -70,6 +70,9 @@ export const resources = pgTable(
     verificationStatus: verificationStatusEnum("verification_status").notNull().default("pending"),
     verificationId: text("verification_id"),
     listed: boolean("listed").notNull().default(false),
+    // Set when an administrator delists the resource. Publisher-initiated
+    // delists leave it null. Blocks relisting via POST /verify-content (#18).
+    adminDelistedAt: timestamp("admin_delisted_at"),
     onchainStatus: onchainStatusEnum("onchain_status").notNull().default("none"),
     onchainTxHash: text("onchain_tx_hash"),
     createdAt: timestamp("created_at").defaultNow().notNull(),

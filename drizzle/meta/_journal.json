@@ -71,6 +71,13 @@
       "when": 1780200000001,
       "tag": "0009_onchain_tx_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1780300000000,
+      "tag": "0010_admin_delisted_at",
+      "breakpoints": true
     }
   ]
 }

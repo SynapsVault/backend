@@ -1305,8 +1305,15 @@ export const openApiSpec = {
         tags: ["Verify"],
         summary: "AI originality check (x402 paywalled)",
         operationId: "verifyContent",
-        description: `Requires an x402 payment of $${0.1} USDC. Returns originality analysis.`,
-        security: [{ X402Payment: [] }],
+        description:
+          `Requires an x402 payment of $${0.1} USDC. Returns originality analysis.\n\n` +
+          "**With `resourceId`:** the request must carry the owning publisher's `x-api-key`. " +
+          "`content` must match the resource's stored content: for file resources, the exact UTF-8 bytes of the uploaded file; " +
+          "for link resources, the external URL. The result sets the resource to `verified` (and listed) or `rejected`. " +
+          "Ownership, the admin delist and the content match are checked before payment, so a refused request is not charged. " +
+          "Resources delisted by an administrator cannot be relisted this way.\n\n" +
+          "**Without `resourceId`:** anonymous paid check; nothing is stored against a resource.",
+        security: [{ X402Payment: [] }, { ApiKeyAuth: [] }],
         requestBody: {
           required: true,
           content: {
@@ -1315,10 +1322,15 @@ export const openApiSpec = {
                 type: "object",
                 required: ["content"],
                 properties: {
-                  content: { type: "string", description: "Text content to verify" },
+                  content: {
+                    type: "string",
+                    description:
+                      "Text content to verify. Must match the resource's stored content when `resourceId` is set.",
+                  },
                   resourceId: {
                     type: "string",
-                    description: "Optional — saves result to this resource",
+                    description:
+                      "Optional. When set, the caller must be the resource's publisher (`x-api-key`) and `content` must match the stored content; the verification result is saved to this resource.",
                   },
                 },
               },
@@ -1332,7 +1344,29 @@ export const openApiSpec = {
               "application/json": { schema: { $ref: "#/components/schemas/VerificationResult" } },
             },
           },
+          "400": {
+            description: "Invalid request body",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "401": {
+            description: "`resourceId` given without a valid `x-api-key`",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
           "402": { description: "Payment required (x402)" },
+          "403": {
+            description:
+              "The caller does not own the resource, or the resource was delisted by an administrator",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "404": {
+            description: "Resource not found",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "409": {
+            description:
+              "`content` does not match the resource's stored content (or the resource has no stored hash). Nothing is changed and no payment is taken.",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
           "429": {
             description: "Rate limit exceeded",
             content: {
