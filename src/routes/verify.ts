@@ -1,19 +1,22 @@
-import { Router, type Router as RouterType } from "express";
+import { Router, type NextFunction, type Request, type Response, type Router as RouterType } from "express";
 import { paymentMiddleware } from "@x402/express";
 import type { RoutesConfig } from "@x402/core/server";
-import { eq, desc, inArray } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { resources, verifications } from "../db/schema.js";
 import { checkOriginality } from "../services/verificationService.js";
 import { emitToPublisher } from "../services/webhookService.js";
 
 import { config } from "../config.js";
+import { AppError } from "../lib/errors.js";
 import { getLogger } from "../lib/logger.js";
 import { businessEventsTotal, verificationCostUsd } from "../lib/metrics.js";
 import { network, sharedX402ResourceServer } from "../lib/x402.js";
+import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
 import { verifyIpRateLimit, verifyWalletRateLimit } from "../middleware/rateLimiters.js";
 import { validate } from "../middleware/validate.js";
 import { verifyContentSchema } from "../schemas/requests.js";
+import { hashFileResource, hashLinkResource } from "../utils/crypto.js";
 
 const router: RouterType = Router();
 
@@ -31,10 +34,75 @@ const verifyRoutes: RoutesConfig = {
 
 const verifyPaywall = paymentMiddleware(verifyRoutes, sharedX402ResourceServer);
 
+/**
+ * Only publishers may attach a verification to their own resource, so a
+ * `resourceId` in the body requires `x-api-key`. Requests without one skip
+ * this entirely and keep the anonymous paid check.
+ */
+function requireApiKeyForResource(req: Request, res: Response, next: NextFunction) {
+  if (!req.body?.resourceId) return next();
+  return apiKeyAuth(req, res, next);
+}
+
+/** True when `content` is exactly what the server stored for the resource. */
+function contentMatchesResource(
+  content: string,
+  resource: { resourceType: "file" | "link"; title: string; contentHash: string | null },
+): boolean {
+  if (!resource.contentHash) return false;
+  try {
+    const computed =
+      resource.resourceType === "link"
+        ? hashLinkResource(content, resource.title)
+        : hashFileResource(Buffer.from(content, "utf8"), resource.title);
+    return computed === resource.contentHash;
+  } catch {
+    // hashLinkResource throws on a value that isn't a URL.
+    return false;
+  }
+}
+
+/**
+ * Runs before the x402 paywall, so a request that would be refused is never
+ * charged. Checks that the resource belongs to the caller, has not been
+ * delisted by an admin, and that `content` hashes to the stored content_hash.
+ */
+async function checkResourceForVerification(req: Request, _res: Response, next: NextFunction) {
+  const { resourceId, content } = req.body ?? {};
+  if (!resourceId) return next();
+
+  const [resource] = await db
+    .select({
+      publisherId: resources.publisherId,
+      title: resources.title,
+      resourceType: resources.resourceType,
+      contentHash: resources.contentHash,
+      adminDelistedAt: resources.adminDelistedAt,
+    })
+    .from(resources)
+    .where(eq(resources.id, resourceId))
+    .limit(1);
+
+  if (!resource) throw new AppError("NOT_FOUND", "Resource not found");
+  if (resource.publisherId !== req.publisher?.id) {
+    throw new AppError("FORBIDDEN", "Forbidden: you do not own this resource");
+  }
+  if (resource.adminDelistedAt) {
+    throw new AppError("FORBIDDEN", "Resource was delisted by an administrator and cannot be relisted");
+  }
+  // Non-string content is rejected by validate() after payment; only hash-check real strings here.
+  if (typeof content === "string" && !contentMatchesResource(content, resource)) {
+    throw new AppError("CONFLICT", "Content does not match the resource's stored content");
+  }
+  next();
+}
+
 // POST /verify-content — AI originality check (x402 paywalled)
 router.post(
   "/verify-content",
   verifyIpRateLimit,
+  requireApiKeyForResource,
+  checkResourceForVerification,
   verifyPaywall,
   verifyWalletRateLimit,
   validate(verifyContentSchema),
@@ -82,7 +150,9 @@ router.post(
         })
         .returning();
 
-      // Update resource status — listing is independent of on-chain registration
+      // Update resource status — listing is independent of on-chain registration.
+      // Re-checks ownership and the admin delist so a change made since the
+      // pre-payment check can't be overwritten.
       const [updated] = await db
         .update(resources)
         .set({
@@ -90,7 +160,13 @@ router.post(
           verificationId: verification.id,
           listed: result.isOriginal,
         })
-        .where(eq(resources.id, resourceId))
+        .where(
+          and(
+            eq(resources.id, resourceId),
+            eq(resources.publisherId, req.publisher!.id),
+            isNull(resources.adminDelistedAt),
+          ),
+        )
         .returning({ publisherId: resources.publisherId, title: resources.title });
 
       if (updated && result.isOriginal) {

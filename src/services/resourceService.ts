@@ -40,7 +40,7 @@ function invalidateReads(resourceId?: string): void {
 export async function adminDelistResource(id: string) {
   const [resource] = await db
     .update(resources)
-    .set({ listed: false })
+    .set({ listed: false, adminDelistedAt: new Date() })
     .where(eq(resources.id, id))
     .returning({ id: resources.id });
   if (resource) invalidateReads(resource.id);
