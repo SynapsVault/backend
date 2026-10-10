@@ -25,7 +25,13 @@ function resolveStellarNetwork(value: string | undefined): StellarDeploymentNetw
   return v === "mainnet" || v === "pubnet" || v === "public" ? "mainnet" : "testnet";
 }
 
-function applyNetworkEnvDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function applyNetworkEnvDefaults(rawEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  // Hosting dashboards (Railway, Vercel) make it easy to save a variable with
+  // an empty value; treat those as unset so defaults apply and optional URL
+  // fields (REDIS_URL, SENTRY_DSN) don't fail validation and crash the boot.
+  const env = Object.fromEntries(
+    Object.entries(rawEnv).filter(([, value]) => value === undefined || value.trim() !== ""),
+  ) as NodeJS.ProcessEnv;
   const network = resolveStellarNetwork(env.STELLAR_NETWORK);
   const preset = NETWORK_PRESETS[network];
   return {
@@ -36,6 +42,9 @@ function applyNetworkEnvDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     USDC_CONTRACT_ID: env.USDC_CONTRACT_ID ?? preset.usdcSacContractId,
     // Accept Supabase's own name for the key (used by docker-compose and CI).
     SUPABASE_SERVICE_KEY: env.SUPABASE_SERVICE_KEY ?? env.SUPABASE_SERVICE_ROLE_KEY,
+    // Both names refer to the same vault-registry contract; accept either.
+    REGISTRY_CONTRACT_ID: env.REGISTRY_CONTRACT_ID ?? env.VAULT_REGISTRY_CONTRACT_ID,
+    VAULT_REGISTRY_CONTRACT_ID: env.VAULT_REGISTRY_CONTRACT_ID ?? env.REGISTRY_CONTRACT_ID,
   };
 }
 
@@ -228,6 +237,10 @@ if (!parsed.success) {
     { event: "config_invalid", issues: parsed.error.format() },
     "invalid environment variables",
   );
+  // Plain-text summary so the offending variables are obvious in host logs.
+  for (const issue of parsed.error.issues) {
+    console.error(`[config] ${issue.path.join(".") || "(env)"}: ${issue.message}`);
+  }
   process.exit(1);
 }
 
