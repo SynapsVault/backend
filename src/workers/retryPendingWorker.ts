@@ -35,6 +35,7 @@ export async function enqueueThumbnail(resourceId: string): Promise<void> {
 }
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
+let inFlight = false;
 
 export function startRetryPendingWorker(): void {
   getLogger().info(
@@ -51,10 +52,18 @@ export function stopRetryPendingWorker(): void {
     clearInterval(intervalHandle);
     intervalHandle = null;
   }
-  retryCounts.clear();
 }
 
 async function tick(): Promise<void> {
+  if (inFlight) {
+    getLogger().debug(
+      { event: "retry_worker_tick_skipped" },
+      "previous retry worker tick still running; skipping",
+    );
+    return;
+  }
+
+  inFlight = true;
   try {
     const cutoff = sql`NOW() - INTERVAL '5 minutes'`;
 
@@ -62,8 +71,12 @@ async function tick(): Promise<void> {
       .select()
       .from(resources)
       .where(
-        and(eq(resources.onchainStatus, "pending"), lt(resources.onchainPendingSince, cutoff)),
-      );
+        and(
+          eq(resources.onchainStatus, "pending"),
+          lt(resources.onchainPendingSince, cutoff),
+        ),
+      )
+      .limit(config.RETRY_WORKER_BATCH_SIZE);
 
     if (stuck.length === 0) return;
 
@@ -73,14 +86,37 @@ async function tick(): Promise<void> {
     );
 
     for (const resource of stuck) {
-      await retryResource(resource);
+      await withTimeout(
+        retryResource(resource),
+        config.RETRY_WORKER_ITEM_TIMEOUT_MS,
+        resource.id,
+      );
     }
   } catch (err) {
     getLogger().error({ event: "retry_worker_tick_error", err }, "retry worker tick failed");
+  } finally {
+    inFlight = false;
   }
 
   await processCleanupJobs();
   await processThumbnailJobs();
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, resourceId: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`retryResource timed out after ${ms}ms for ${resourceId}`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function processCleanupJobs(): Promise<void> {
@@ -182,7 +218,30 @@ async function processThumbnailJobs(): Promise<void> {
 async function retryResource(resource: typeof resources.$inferSelect): Promise<void> {
   const log = getLogger().child({ resourceId: resource.id });
 
+  let attempts = 0;
+
   try {
+    const [incremented] = await db
+      .update(resources)
+      .set({ onchainAttempts: sql`${resources.onchainAttempts} + 1` })
+      .where(eq(resources.id, resource.id))
+      .returning({ onchainAttempts: resources.onchainAttempts });
+
+    attempts = incremented?.onchainAttempts ?? 0;
+
+    if (attempts > MAX_RETRY_ATTEMPTS) {
+      log.warn(
+        { event: "retry_exhausted", attempts },
+        "max retry attempts exhausted; marking as failed",
+      );
+      await db
+        .update(resources)
+        .set({ onchainStatus: "failed" })
+        .where(eq(resources.id, resource.id));
+      retryCounts.delete(resource.id);
+      return;
+    }
+
     if (resource.onchainTxHash) {
       const status = await pollTransactionStatus(resource.onchainTxHash);
 
@@ -229,23 +288,6 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
         .update(resources)
         .set({ onchainStatus: "registered" })
         .where(eq(resources.id, resource.id));
-      retryCounts.delete(resource.id);
-      return;
-    }
-
-    const attempts = (retryCounts.get(resource.id) ?? 0) + 1;
-    retryCounts.set(resource.id, attempts);
-
-    if (attempts > MAX_RETRY_ATTEMPTS) {
-      log.warn(
-        { event: "retry_exhausted", attempts: attempts - 1 },
-        "max retry attempts exhausted; marking as failed",
-      );
-      await db
-        .update(resources)
-        .set({ onchainStatus: "failed" })
-        .where(eq(resources.id, resource.id));
-      retryCounts.delete(resource.id);
       return;
     }
 
@@ -316,7 +358,6 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
       })
       .where(eq(resources.id, resource.id));
 
-    retryCounts.delete(resource.id);
     log.info(
       { event: "retry_success", txHash: txHash || undefined },
       "on-chain registration retry succeeded",
@@ -327,17 +368,15 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
       "on-chain registration retry failed",
     );
 
-    const attempts = retryCounts.get(resource.id) ?? 1;
     if (attempts > MAX_RETRY_ATTEMPTS) {
       log.warn(
-        { event: "retry_exhausted_on_error", attempts: attempts - 1 },
+        { event: "retry_exhausted_on_error", attempts },
         "max retry attempts exhausted after error; marking as failed",
       );
       await db
         .update(resources)
         .set({ onchainStatus: "failed" })
         .where(eq(resources.id, resource.id));
-      retryCounts.delete(resource.id);
     }
   }
 }
