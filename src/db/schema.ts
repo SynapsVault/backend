@@ -157,6 +157,9 @@ export const verifications = pgTable(
     checkedAt: timestamp("checked_at").defaultNow().notNull(),
   },
   (table) => ({
+    // /agent/status fetches the most recent verifications for its activity
+    // list, and aggregate queries filter/order by recency (#98).
+    checkedAtIdx: index("idx_verifications_checked_at").on(table.checkedAt),
     // Verification lookups by resource (#107).
     resourceIdIdx: index("idx_verifications_resource_id").on(table.resourceId),
   }),

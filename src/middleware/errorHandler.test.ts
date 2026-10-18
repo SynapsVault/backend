@@ -65,4 +65,20 @@ describe("errorHandler", () => {
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ code: "NOT_FOUND", error: "Route GET /nope not found" });
   });
+
+  it("snapshots the not-found response body", async () => {
+    const res = await request(buildApp(() => null)).get("/nope");
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchSnapshot();
+    expect(res.body).toEqual(expect.objectContaining({ error: expect.any(String), code: "NOT_FOUND", requestId: "req-123" }));
+  });
+
+  it("snapshots the generic app error response body", async () => {
+    const res = await request(buildApp(() => new Error("db password leaked"))).get("/boom");
+    expect(res.status).toBe(500);
+    expect(res.body).toMatchSnapshot();
+    expect(res.body).toEqual(
+      expect.objectContaining({ error: expect.any(String), code: "INTERNAL_ERROR", requestId: "req-123" }),
+    );
+  });
 });

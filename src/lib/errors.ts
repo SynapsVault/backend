@@ -58,6 +58,26 @@ export function isAppError(value: unknown): value is AppError {
   return value instanceof AppError;
 }
 
+/** Minimal response surface needed to write an error body (Express `Response` compatible). */
+export interface ErrorResponseLike {
+  status(code: number): { json(body: ErrorResponseBody): unknown };
+}
+
+/**
+ * Writes any thrown value as the canonical error body. This is the single
+ * place middleware should use so every response carries `error`, `code` and
+ * `requestId`.
+ */
+export function sendError(
+  res: ErrorResponseLike,
+  error: unknown,
+  requestId?: string,
+): ErrorResponseBody {
+  const body = serializeError(error, requestId);
+  res.status(getStatusCode(error)).json(body);
+  return body;
+}
+
 /** HTTP status for any thrown value (honours `status`/`statusCode` set by libs like body-parser). */
 export function getStatusCode(error: unknown): number {
   if (isAppError(error)) return error.status;

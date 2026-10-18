@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import { config } from "../config.js";
+import { AppError } from "../lib/AppError.js";
 import { parseAllowedMimeTypes, validateUpload } from "../lib/uploadValidation.js";
 
 const allowedMimeTypes = parseAllowedMimeTypes(config.ALLOWED_UPLOAD_MIME_TYPES);
@@ -46,12 +47,16 @@ export function singleFileUpload(field = "file"): RequestHandler {
       if (err instanceof MulterError) {
         release();
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(413).json({
-            error: `File exceeds the maximum size of ${config.MAX_FILE_SIZE_MB}MB`,
-          });
+          next(
+            new AppError(
+              `File exceeds the maximum size of ${config.MAX_FILE_SIZE_MB}MB`,
+              413,
+              "PAYLOAD_TOO_LARGE",
+            ),
+          );
           return;
         }
-        res.status(400).json({ error: `Upload error: ${err.message}` });
+        next(new AppError(`Upload error: ${err.message}`, 400, "VALIDATION_ERROR"));
         return;
       }
       if (err) {
@@ -81,7 +86,7 @@ export function validateUploadContentType(req: Request, res: Response, next: Nex
       const result = validateUpload(buffer, file.mimetype, allowedMimeTypes);
       if (!result.ok) {
         return fs.unlink(file.path).catch(() => undefined).then(() => {
-          res.status(result.status).json({ error: result.error });
+          next(new AppError(result.error, result.status, "VALIDATION_ERROR"));
         });
       }
       next();
