@@ -48,14 +48,16 @@ let lastResourceIdsArg: unknown;
 let activityLimitArg: unknown;
 let aggregateQueryCount = 0;
 
-const { VERIFICATIONS_MARKER, RESOURCES_MARKER } = vi.hoisted(() => ({
+const { VERIFICATIONS_MARKER, RESOURCES_MARKER, PAYMENTS_MARKER } = vi.hoisted(() => ({
   VERIFICATIONS_MARKER: { __table: "verifications" },
   RESOURCES_MARKER: { __table: "resources" },
+  PAYMENTS_MARKER: { __table: "payments" },
 }));
 
 vi.mock("../db/schema.js", () => ({
   verifications: VERIFICATIONS_MARKER,
   resources: RESOURCES_MARKER,
+  payments: PAYMENTS_MARKER,
 }));
 
 vi.mock("drizzle-orm", async (importOriginal) => {
@@ -70,6 +72,15 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 });
 
 vi.mock("../services/webhookService.js", () => ({ emitToPublisher: vi.fn() }));
+
+// Payment rows keyed by verification id, with mixed outcomes. Only settled rows
+// should contribute to stats.totalEarned.
+const paymentRows = [
+  { verificationId: "v1", status: "settled", amount: "0.10" },
+  { verificationId: "v2", status: "rejected", amount: "0.10" },
+  { verificationId: "v3", status: "settled", amount: "0.25" },
+  { verificationId: "v3", status: "pending", amount: "0.25" },
+];
 
 vi.mock("../db/client.js", () => ({
   db: {
@@ -97,6 +108,13 @@ vi.mock("../db/client.js", () => ({
               resourceQueryCount++;
               return Promise.resolve(resourceTitleRows);
             },
+          };
+        }
+        if (table === PAYMENTS_MARKER) {
+          return {
+            innerJoin: () => ({
+              where: () => Promise.resolve(paymentRows),
+            }),
           };
         }
         throw new Error("unexpected table in select().from()");
@@ -244,5 +262,22 @@ describe("POST /verify-content — prompt injection resistance (#96)", () => {
     // model returns an approval for injected content.
     expect(insert).not.toHaveBeenCalled();
     expect(res.body.listed).toBe(false);
+  });
+});
+
+describe("GET /agent/status — totalEarned from settled payments (#99)", () => {
+  beforeEach(() => {
+    resourceQueryCount = 0;
+    lastResourceIdsArg = undefined;
+  });
+
+  it("reports only settled payment amounts, ignoring rejected and unsettled rows", async () => {
+    const res = await request(createTestApp()).get("/agent/status");
+
+    expect(res.status).toBe(200);
+    // Settled: 0.10 (v1) + 0.25 (v3) = 0.35. Rejected (v2) and pending (v3) excluded.
+    expect(res.body.stats.totalEarned).toBeCloseTo(0.35, 10);
+    // Not count × price (3 × 0.10 = 0.30).
+    expect(res.body.stats.totalEarned).not.toBeCloseTo(0.3, 10);
   });
 });
