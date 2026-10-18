@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response, type Router as RouterType } from "express";
 import { paymentMiddleware } from "@x402/express";
 import type { RoutesConfig } from "@x402/core/server";
-import { and, eq, desc, inArray, isNull } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { resources, verifications } from "../db/schema.js";
 import { checkOriginality } from "../services/verificationService.js";
@@ -152,13 +152,15 @@ router.post(
 
       // Update resource status — listing is independent of on-chain registration.
       // Re-checks ownership and the admin delist so a change made since the
-      // pre-payment check can't be overwritten.
+      // pre-payment check can't be overwritten. A listing only goes live when
+      // the model approves *and* the deterministic check agrees (#96).
+      const shouldList = result.isOriginal && result.deterministicPassed;
       const [updated] = await db
         .update(resources)
         .set({
-          verificationStatus: result.isOriginal ? "verified" : "rejected",
+          verificationStatus: shouldList ? "verified" : "rejected",
           verificationId: verification.id,
-          listed: result.isOriginal,
+          listed: shouldList,
         })
         .where(
           and(
@@ -169,7 +171,7 @@ router.post(
         )
         .returning({ publisherId: resources.publisherId, title: resources.title });
 
-      if (updated && result.isOriginal) {
+      if (updated && shouldList) {
         void emitToPublisher(updated.publisherId, "resource.listed", {
           resourceId,
           title: updated.title,
@@ -183,25 +185,35 @@ router.post(
 
 // GET /agent/status — public agent stats
 router.get("/agent/status", async (_req, res) => {
-  // All verifications
-  const allVerifications = await db
+  // Aggregate counters in SQL so the cost stays constant as usage grows (#98).
+  const [aggregates] = await db
+    .select({
+      totalVerifications: sql<number>`count(*)::int`,
+      verified: sql<number>`count(*) filter (where ${verifications.isOriginal})::int`,
+      rejected: sql<number>`count(*) filter (where not ${verifications.isOriginal})::int`,
+      avgConfidence: sql<number>`coalesce(avg(${verifications.confidence}), 0)::float8`,
+      totalPromptTokens: sql<number>`coalesce(sum(${verifications.promptTokens}), 0)::bigint`,
+      totalCompletionTokens: sql<number>`coalesce(sum(${verifications.completionTokens}), 0)::bigint`,
+      totalTokens: sql<number>`coalesce(sum(${verifications.totalTokens}), 0)::bigint`,
+      totalEstimatedCost: sql<number>`coalesce(sum(${verifications.estimatedCost}), 0)::float8`,
+    })
+    .from(verifications);
+
+  // Only the 10 most recent rows are read for the activity list.
+  const recentVerifications = await db
     .select({
       id: verifications.id,
       resourceId: verifications.resourceId,
       isOriginal: verifications.isOriginal,
       confidence: verifications.confidence,
       flags: verifications.flags,
-      promptTokens: verifications.promptTokens,
-      completionTokens: verifications.completionTokens,
-      totalTokens: verifications.totalTokens,
-      estimatedCost: verifications.estimatedCost,
       checkedAt: verifications.checkedAt,
     })
     .from(verifications)
-    .orderBy(desc(verifications.checkedAt));
+    .orderBy(desc(verifications.checkedAt))
+    .limit(10);
 
   // Get resource titles for recent activity in a single batched query
-  const recentVerifications = allVerifications.slice(0, 10);
   const recentResourceIds = [...new Set(recentVerifications.map((v) => v.resourceId))];
 
   const titleRows =
@@ -222,27 +234,18 @@ router.get("/agent/status", async (_req, res) => {
     checkedAt: v.checkedAt,
   }));
 
-  const totalVerifications = allVerifications.length;
-  const verified = allVerifications.filter((v) => v.isOriginal).length;
-  const rejected = allVerifications.filter((v) => !v.isOriginal).length;
+  const totalVerifications = Number(aggregates?.totalVerifications ?? 0);
+  const verified = Number(aggregates?.verified ?? 0);
+  const rejected = Number(aggregates?.rejected ?? 0);
   const pricePerVerification = parseFloat(config.VERIFICATION_PRICE);
   const totalEarned = totalVerifications * pricePerVerification;
-  const avgConfidence =
-    totalVerifications > 0
-      ? allVerifications.reduce((sum, v) => sum + v.confidence, 0) / totalVerifications
-      : 0;
+  const avgConfidence = Number(aggregates?.avgConfidence ?? 0);
 
   // Aggregate model token usage + estimated spend across all verifications (#283).
-  const totalPromptTokens = allVerifications.reduce((sum, v) => sum + (v.promptTokens ?? 0), 0);
-  const totalCompletionTokens = allVerifications.reduce(
-    (sum, v) => sum + (v.completionTokens ?? 0),
-    0,
-  );
-  const totalTokens = allVerifications.reduce((sum, v) => sum + (v.totalTokens ?? 0), 0);
-  const totalEstimatedCost = allVerifications.reduce(
-    (sum, v) => sum + (v.estimatedCost ? Number(v.estimatedCost) : 0),
-    0,
-  );
+  const totalPromptTokens = Number(aggregates?.totalPromptTokens ?? 0);
+  const totalCompletionTokens = Number(aggregates?.totalCompletionTokens ?? 0);
+  const totalTokens = Number(aggregates?.totalTokens ?? 0);
+  const totalEstimatedCost = Number(aggregates?.totalEstimatedCost ?? 0);
 
   res.json({
     agent: {

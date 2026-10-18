@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { getStatusCode, serializeError } from "../lib/errors.js";
+import { AppError, getStatusCode, serializeError } from "../lib/errors.js";
 import { getLogger, getRequestId } from "../lib/logger.js";
 import { getRequestLogContext } from "../lib/requestLogContext.js";
 import { captureServerException } from "../lib/sentry.js";
@@ -30,9 +30,6 @@ export function errorHandler(err: unknown, req: Request, res: Response, next: Ne
 
 /** Fallback for unmatched routes. */
 export function notFoundHandler(req: Request, res: Response): void {
-  res.status(404).json({
-    error: `Route ${req.method} ${req.path} not found`,
-    code: "NOT_FOUND",
-    ...(getRequestId() ? { requestId: getRequestId() } : {}),
-  });
+  const err = new AppError("NOT_FOUND", `Route ${req.method} ${req.path} not found`);
+  res.status(404).json(serializeError(err, getRequestId()));
 }

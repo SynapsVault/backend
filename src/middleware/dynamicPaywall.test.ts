@@ -23,7 +23,7 @@ vi.mock("../lib/x402.js", () => ({
   sharedX402ResourceServer: {},
 }));
 vi.mock("../lib/logger.js", () => ({
-  getRequestId: () => undefined,
+  getRequestId: () => "test-request-id",
   getLogger: () => ({
     error: vi.fn(),
     warn: vi.fn(),
@@ -104,7 +104,12 @@ describe("dynamicPaywall middleware", () => {
     await dynamicPaywall(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(404);
-    expect(res.json).toHaveBeenCalledWith({ error: "Resource not found" });
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Resource not found",
+      code: "RESOURCE_NOT_FOUND",
+      requestId: "test-request-id",
+    });
+    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -128,7 +133,12 @@ describe("dynamicPaywall middleware", () => {
     await dynamicPaywall(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(404);
-    expect(res.json).toHaveBeenCalledWith({ error: "Resource not listed" });
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Resource not listed",
+      code: "RESOURCE_NOT_FOUND",
+      requestId: "test-request-id",
+    });
+    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -152,9 +162,12 @@ describe("dynamicPaywall middleware", () => {
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith({
       error: "chain_unavailable",
+      code: "CHAIN_UNAVAILABLE",
+      requestId: "test-request-id",
       message: "Unable to verify resource price. Please try again later.",
       resourceId: "r2",
     });
+    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -176,8 +189,14 @@ describe("dynamicPaywall middleware", () => {
 
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ error: "chain_unavailable", resourceId: "r-missing" }),
+      expect.objectContaining({
+        error: "chain_unavailable",
+        code: "CHAIN_UNAVAILABLE",
+        requestId: "test-request-id",
+        resourceId: "r-missing",
+      }),
     );
+    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -200,10 +219,13 @@ describe("dynamicPaywall middleware", () => {
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json).toHaveBeenCalledWith({
       error: "price_mismatch",
+      code: "PRICE_MISMATCH",
+      requestId: "test-request-id",
       message:
         "Resource price is temporarily unavailable due to a configuration issue. Please try again later.",
       resourceId: "r3",
     });
+    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 

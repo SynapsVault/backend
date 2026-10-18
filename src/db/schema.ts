@@ -92,24 +92,32 @@ export const resources = pgTable(
 );
 
 // Verifications — AI originality check results
-export const verifications = pgTable("verifications", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => createId()),
-  resourceId: text("resource_id")
-    .notNull()
-    .references(() => resources.id),
-  isOriginal: boolean("is_original").notNull(),
-  confidence: real("confidence").notNull(), // 0.0 - 1.0
-  flags: text("flags"), // JSON stringified array of issues
-  // Token usage + estimated spend for the verification model call (#283).
-  // Nullable so historical rows predating usage tracking remain valid.
-  promptTokens: integer("prompt_tokens"),
-  completionTokens: integer("completion_tokens"),
-  totalTokens: integer("total_tokens"),
-  estimatedCost: text("estimated_cost"), // USD, stringified for precision
-  checkedAt: timestamp("checked_at").defaultNow().notNull(),
-});
+export const verifications = pgTable(
+  "verifications",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => createId()),
+    resourceId: text("resource_id")
+      .notNull()
+      .references(() => resources.id),
+    isOriginal: boolean("is_original").notNull(),
+    confidence: real("confidence").notNull(), // 0.0 - 1.0
+    flags: text("flags"), // JSON stringified array of issues
+    // Token usage + estimated spend for the verification model call (#283).
+    // Nullable so historical rows predating usage tracking remain valid.
+    promptTokens: integer("prompt_tokens"),
+    completionTokens: integer("completion_tokens"),
+    totalTokens: integer("total_tokens"),
+    estimatedCost: text("estimated_cost"), // USD, stringified for precision
+    checkedAt: timestamp("checked_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // /agent/status fetches the most recent verifications for its activity
+    // list, and aggregate queries filter/order by recency (#98).
+    checkedAtIdx: index("idx_verifications_checked_at").on(table.checkedAt),
+  }),
+);
 
 // Payments — tracks x402 payments for resources
 export const payments = pgTable(

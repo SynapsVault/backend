@@ -12,6 +12,10 @@ vi.mock("../config.js", () => ({
 
 import { singleFileUpload, validateUploadContentType } from "./uploadGuards.js";
 
+vi.mock("../lib/requestContext.js", () => ({
+  getRequestId: () => "test-request-id",
+}));
+
 const PDF = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -45,6 +49,12 @@ describe("upload guards middleware", () => {
         contentType: "application/zip",
       });
     expect(res.status).toBe(415);
+    expect(res.body).toMatchSnapshot();
+    expect(res.body).toMatchObject({
+      error: expect.any(String),
+      code: expect.any(String),
+      requestId: "test-request-id",
+    });
   });
 
   it("rejects when declared type does not match detected bytes (415)", async () => {
@@ -53,6 +63,12 @@ describe("upload guards middleware", () => {
       .attach("file", PNG, { filename: "fake.pdf", contentType: "application/pdf" });
     expect(res.status).toBe(415);
     expect(res.body.error).toMatch(/does not match/i);
+    expect(res.body).toMatchSnapshot();
+    expect(res.body).toMatchObject({
+      error: expect.any(String),
+      code: expect.any(String),
+      requestId: "test-request-id",
+    });
   });
 
   it("rejects oversized uploads with 413", async () => {
@@ -61,6 +77,26 @@ describe("upload guards middleware", () => {
       .post("/upload")
       .attach("file", big, { filename: "big.txt", contentType: "text/plain" });
     expect(res.status).toBe(413);
+    expect(res.body).toMatchSnapshot();
+    expect(res.body).toMatchObject({
+      error: expect.any(String),
+      code: expect.any(String),
+      requestId: "test-request-id",
+    });
+  });
+
+  it("rejects malformed multipart bodies with 400", async () => {
+    const res = await request(app)
+      .post("/upload")
+      .set("Content-Type", "multipart/form-data; boundary=----broken")
+      .send("not a valid multipart body");
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchSnapshot();
+    expect(res.body).toMatchObject({
+      error: expect.any(String),
+      code: expect.any(String),
+      requestId: "test-request-id",
+    });
   });
 
   it("passes through requests with no file", async () => {

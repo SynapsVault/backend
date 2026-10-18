@@ -10,6 +10,14 @@ const h = vi.hoisted(() => ({
   insert: vi.fn(),
   update: vi.fn(),
   setValues: vi.fn(),
+  // Aggregate results returned by the mocked db for /agent/status.
+  aggregateRow: { total: 0, verified: 0, rejected: 0, totalEarned: "0", avgConfidence: "0" } as Record<
+    string,
+    unknown
+  >,
+  recentRows: [] as Array<Record<string, unknown>>,
+  // Records how many rows each select path was asked to return.
+  selectCalls: [] as Array<{ kind: "aggregate" | "recent" | "other"; limit?: number }>,
 }));
 
 vi.mock("../config.js", () => ({
@@ -28,20 +36,49 @@ vi.mock("../services/verificationService.js", () => ({
 
 vi.mock("../services/webhookService.js", () => ({ emitToPublisher: vi.fn() }));
 
-vi.mock("../db/client.js", () => ({
-  db: {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        orderBy: vi.fn(() => Promise.resolve([])),
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve(h.resourceRows)),
-        })),
-      })),
-    })),
-    insert: (...args: unknown[]) => h.insert(...args),
-    update: (...args: unknown[]) => h.update(...args),
-  },
-}));
+vi.mock("../db/client.js", () => {
+  // A select() chain that supports both the resource lookup (where -> limit)
+  // and the /agent/status aggregate + recent-activity queries.
+  const makeChain = (fields: Record<string, unknown> | undefined) => {
+    const chain: any = {
+      from: () => chain,
+      where: () => chain,
+      groupBy: () => chain,
+      orderBy: () => chain,
+      limit: (n: number) => {
+        // Distinguish the resource lookup from the recent-activity query by
+        // whether the caller selected aggregate fields.
+        if (fields && ("total" in fields || "verified" in fields)) {
+          h.selectCalls.push({ kind: "aggregate", limit: n });
+          return Promise.resolve([h.aggregateRow]);
+        }
+        if (n === 10) {
+          h.selectCalls.push({ kind: "recent", limit: n });
+          return Promise.resolve(h.recentRows);
+        }
+        h.selectCalls.push({ kind: "other", limit: n });
+        return Promise.resolve(h.resourceRows);
+      },
+      // Aggregate queries may resolve directly (no limit) or via groupBy.
+      then: (resolve: (value: unknown) => unknown, reject: (err: unknown) => unknown) => {
+        if (fields && ("total" in fields || "verified" in fields)) {
+          h.selectCalls.push({ kind: "aggregate" });
+          return Promise.resolve([h.aggregateRow]).then(resolve, reject);
+        }
+        return Promise.resolve(h.resourceRows).then(resolve, reject);
+      },
+    };
+    return chain;
+  };
+
+  return {
+    db: {
+      select: vi.fn((fields?: Record<string, unknown>) => makeChain(fields)),
+      insert: (...args: unknown[]) => h.insert(...args),
+      update: (...args: unknown[]) => h.update(...args),
+    },
+  };
+});
 
 vi.mock("../db/schema.js", () => ({
   resources: {},
@@ -372,6 +409,9 @@ describe("POST /verify-content — AI content verification endpoint", () => {
 describe("GET /agent/status — public agent stats endpoint", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.aggregateRow = { total: 0, verified: 0, rejected: 0, totalEarned: "0", avgConfidence: "0" };
+    h.recentRows = [];
+    h.selectCalls = [];
   });
 
   it("returns agent status with correct shape", async () => {
@@ -419,5 +459,61 @@ describe("GET /agent/status — public agent stats endpoint", () => {
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.recentActivity)).toBe(true);
+  });
+
+  it("computes totals from SQL aggregates and matches the old in-memory values", async () => {
+    // Old implementation summed these rows in memory.
+    const rows = [
+      { isOriginal: true, confidence: 0.9, amountPaid: "0.10" },
+      { isOriginal: true, confidence: 0.8, amountPaid: "0.10" },
+      { isOriginal: false, confidence: 0.2, amountPaid: "0.10" },
+    ];
+    const expectedTotal = rows.length;
+    const expectedVerified = rows.filter((r) => r.isOriginal).length;
+    const expectedRejected = rows.filter((r) => !r.isOriginal).length;
+    const expectedEarned = rows.reduce((sum, r) => sum + Number(r.amountPaid), 0).toFixed(4);
+    const expectedAvg = (rows.reduce((sum, r) => sum + r.confidence, 0) / rows.length).toFixed(2);
+
+    h.aggregateRow = {
+      total: expectedTotal,
+      verified: expectedVerified,
+      rejected: expectedRejected,
+      totalEarned: expectedEarned,
+      avgConfidence: expectedAvg,
+    };
+
+    const res = await request(createTestApp()).get("/agent/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.stats.totalVerifications).toBe(expectedTotal);
+    expect(res.body.stats.verified).toBe(expectedVerified);
+    expect(res.body.stats.rejected).toBe(expectedRejected);
+    expect(res.body.stats.totalEarned).toBe(expectedEarned);
+    expect(res.body.stats.avgConfidence).toBe(expectedAvg);
+  });
+
+  it("does not read the full verifications table: only aggregates and 10 recent rows", async () => {
+    h.aggregateRow = { total: 5, verified: 4, rejected: 1, totalEarned: "0.5000", avgConfidence: "0.80" };
+    h.recentRows = Array.from({ length: 10 }, (_, i) => ({
+      id: `v${i}`,
+      isOriginal: i % 2 === 0,
+      confidence: 0.8,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+    }));
+
+    const res = await request(createTestApp()).get("/agent/status");
+
+    expect(res.status).toBe(200);
+    expect(res.body.recentActivity).toHaveLength(10);
+
+    // Every select must be either an aggregate or the limited recent query.
+    for (const call of h.selectCalls) {
+      expect(call.kind).not.toBe("other");
+      if (call.kind === "recent") {
+        expect(call.limit).toBe(10);
+      }
+    }
+    expect(h.selectCalls.some((c) => c.kind === "aggregate")).toBe(true);
+    expect(h.selectCalls.some((c) => c.kind === "recent" && c.limit === 10)).toBe(true);
   });
 });

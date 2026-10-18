@@ -8,6 +8,7 @@ import { getLogger } from "../lib/logger.js";
 import { network, sharedX402ResourceServer } from "../lib/x402.js";
 import { getResource } from "../services/registryClient.js";
 import { getOnChainPrice, normalizeUsdcPrice } from "../lib/stellarRegistry.js";
+import { AppError } from "../lib/errors.js";
 
 // Cache middleware instances by resource ID to avoid re-creating on every request
 const middlewareCache = new Map<
@@ -26,13 +27,11 @@ export async function dynamicPaywall(req: Request, res: Response, next: NextFunc
     .then((rows) => rows[0] ?? null);
 
   if (!resource) {
-    res.status(404).json({ error: "Resource not found" });
-    return;
+    throw new AppError("NOT_FOUND", "Resource not found", { resourceId });
   }
 
   if (!resource.listed) {
-    res.status(404).json({ error: "Resource not listed" });
-    return;
+    throw new AppError("NOT_FOUND", "Resource not listed", { resourceId });
   }
 
   // Validate the DB price against the on-chain registry before serving a 402.
@@ -56,12 +55,11 @@ export async function dynamicPaywall(req: Request, res: Response, next: NextFunc
       },
       "on-chain price lookup failed",
     );
-    res.status(503).json({
-      error: "chain_unavailable",
-      message: "Unable to verify resource price. Please try again later.",
-      resourceId,
-    });
-    return;
+    throw new AppError(
+      "SERVICE_UNAVAILABLE",
+      "Unable to verify resource price. Please try again later.",
+      { resourceId },
+    );
   }
 
   const dbPriceNormalized = normalizeUsdcPrice(resource.price);
@@ -77,13 +75,11 @@ export async function dynamicPaywall(req: Request, res: Response, next: NextFunc
       },
       "price mismatch between database and on-chain registry",
     );
-    res.status(409).json({
-      error: "price_mismatch",
-      message:
-        "Resource price is temporarily unavailable due to a configuration issue. Please try again later.",
-      resourceId,
-    });
-    return;
+    throw new AppError(
+      "CONFLICT",
+      "Resource price is temporarily unavailable due to a configuration issue. Please try again later.",
+      { resourceId },
+    );
   }
 
   // Attach resource to request for the delivery handler

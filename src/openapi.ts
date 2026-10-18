@@ -80,7 +80,9 @@ export const openApiSpec = {
     schemas: {
       Error: {
         type: "object",
-        description: "Standard error body returned by every endpoint.",
+        description:
+          "Standard error body returned by every endpoint, including the paywall, upload guards, " +
+          "not-found handler and unexpected application errors.",
         properties: {
           error: { type: "string", description: "Human-readable message.", example: "Resource not found" },
           code: {
@@ -93,6 +95,8 @@ export const openApiSpec = {
               "NOT_FOUND",
               "CONFLICT",
               "PAYLOAD_TOO_LARGE",
+              "UNSUPPORTED_MEDIA_TYPE",
+              "PAYMENT_REQUIRED",
               "RATE_LIMITED",
               "INTERNAL_ERROR",
               "UPSTREAM_ERROR",
@@ -111,7 +115,7 @@ export const openApiSpec = {
             example: "req_01HZX8Y2K3M4N5P6Q7R8S9T0V1",
           },
         },
-        required: ["error", "code"],
+        required: ["error", "code", "requestId"],
       },
       RateLimitError: {
         type: "object",
@@ -1005,6 +1009,14 @@ export const openApiSpec = {
             description: "Unauthorized",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
+          "413": {
+            description: "Uploaded file exceeds the maximum allowed size",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "415": {
+            description: "Unsupported upload media type",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
           "429": {
             description: "Rate limit exceeded",
             content: {
@@ -1063,7 +1075,10 @@ export const openApiSpec = {
         security: [{ X402Payment: [] }],
         responses: {
           "200": { description: "Resource content or link URL delivered" },
-          "402": { description: "Payment required (x402)" },
+          "402": {
+            description: "Payment required (x402)",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
           "404": {
             description: "Not found or not listed",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
@@ -1459,7 +1474,10 @@ export const openApiSpec = {
             description: "`resourceId` given without a valid `x-api-key`",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
           },
-          "402": { description: "Payment required (x402)" },
+          "402": {
+            description: "Payment required (x402)",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
           "403": {
             description:
               "The caller does not own the resource, or the resource was delisted by an administrator",
