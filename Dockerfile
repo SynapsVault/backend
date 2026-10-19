@@ -10,7 +10,7 @@ RUN npm ci
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+RUN npx tsc -p packages/registry-client && npm run build && npm prune --omit=dev
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
 FROM node:24-alpine

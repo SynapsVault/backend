@@ -34,6 +34,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { config } from "../config.js";
 import { getLogger } from "../lib/logger.js";
 import { publishIpRateLimit, publishWalletRateLimit } from "../middleware/rateLimiters.js";
+import { IDEMPOTENCY_IN_PROGRESS_TTL_MS } from "../lib/idempotency.js";
 import { getIdempotencyStore, idempotencyCacheKey } from "../lib/idempotency.js";
 import { parseIdempotencyKey } from "../lib/idempotencyKey.js";
 import { decodeNewCreator, decodeSetPrice } from "../services/signedTxDecode.js";
@@ -100,7 +101,7 @@ router.post(
         res.status(existing.result.status).json(existing.result.body);
         return;
       }
-      await store.set(scopedKey, { inProgress: true });
+      await store.set(scopedKey, { inProgress: true }, IDEMPOTENCY_IN_PROGRESS_TTL_MS);
     }
 
     // Records the final result under the idempotency key (when keyed), then responds.
