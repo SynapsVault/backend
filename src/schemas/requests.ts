@@ -1,12 +1,13 @@
 import { z } from "zod/v4";
 import { config } from "../config.js";
+import { stellarAddressSchema } from "../lib/stellarAddressValidation.js";
 import { webhookEventValues } from "./webhooks.js";
 
 export const publisherRegisterSchema = z
   .object({
     name: z.string().min(1),
     email: z.email(),
-    walletAddress: z.string().min(1),
+    walletAddress: stellarAddressSchema,
   })
   .strict();
 
@@ -15,7 +16,7 @@ export const linkPublishSchema = z
     title: z.string().min(1),
     description: z.string().optional(),
     price: z.string().min(1),
-    walletAddress: z.string().optional(),
+    walletAddress: stellarAddressSchema.optional(),
     externalUrl: z.url(),
   })
   .strict();
@@ -25,7 +26,7 @@ export const filePublishBodySchema = z
     title: z.string().min(1),
     price: z.string().min(1),
     description: z.string().optional(),
-    walletAddress: z.string().optional(),
+    walletAddress: stellarAddressSchema.optional(),
   })
   .strict();
 
@@ -57,14 +58,14 @@ export const setPriceSchema = z
 
 export const prepareOwnershipSchema = z
   .object({
-    newCreator: z.string().min(1),
+    newCreator: stellarAddressSchema,
   })
   .strict();
 
 export const transferOwnershipSchema = z
   .object({
     signedXdr: z.string().min(1),
-    newCreator: z.string().min(1),
+    newCreator: stellarAddressSchema,
   })
   .strict();
 
