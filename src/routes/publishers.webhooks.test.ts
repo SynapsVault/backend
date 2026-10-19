@@ -55,6 +55,7 @@ vi.mock("../middleware/apiKeyAuth.js", () => ({
 
 vi.mock("../middleware/rateLimiters.js", () => ({
   publisherRateLimit: (_req: any, _res: any, next: any) => next(),
+  registerIpRateLimit: (_req: any, _res: any, next: any) => next(),
 }));
 
 vi.mock("../services/publisherService.js", () => ({

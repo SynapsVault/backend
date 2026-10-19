@@ -17,6 +17,13 @@ export const verifyIpRateLimit: RequestHandler = createIpRateLimiter(
   "verify_ip",
 );
 
+export const registerIpRateLimit: RequestHandler = createIpRateLimiter(
+  store,
+  "register",
+  config.RATE_LIMIT_REGISTER_IP_MAX,
+  config.RATE_LIMIT_REGISTER_IP_WINDOW_MS,
+  "register_ip",
+);
 export const verifyWalletRateLimit: RequestHandler = createWalletRateLimiter(
   store,
   "verify",

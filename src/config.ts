@@ -226,6 +226,8 @@ const envSchema = z.object({
   VERIFICATION_COMPLETION_COST_PER_1M: z.coerce.number().nonnegative().default(15),
 
   // Rate limiting (verify-content + publish)
+  RATE_LIMIT_REGISTER_IP_MAX: z.coerce.number().default(10),
+  RATE_LIMIT_REGISTER_IP_WINDOW_MS: z.coerce.number().default(3_600_000),
   RATE_LIMIT_VERIFY_IP_MAX: z.coerce.number().default(10),
   RATE_LIMIT_VERIFY_IP_WINDOW_MS: z.coerce.number().default(60_000),
   RATE_LIMIT_VERIFY_WALLET_MAX: z.coerce.number().default(5),

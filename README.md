@@ -150,6 +150,23 @@ const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex
 Failures are retried with exponential backoff (`WEBHOOK_MAX_ATTEMPTS`).
 Private and loopback URLs are rejected.
 
+## Rate limiting
+
+All rate limits use a sliding-window algorithm. Responses include `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset` headers. Blocked requests return `429` with `{ "error": "Too many requests", "code": "RATE_LIMITED", "retryAfterSeconds": N }` and a `Retry-After` header.
+
+| Limiter | Scope | Default | Env vars |
+|---|---|---|---|
+| Registration | IP | 10 per hour | `RATE_LIMIT_REGISTER_IP_MAX`, `RATE_LIMIT_REGISTER_IP_WINDOW_MS` |
+| Verify-content | IP | 10 / min | `RATE_LIMIT_VERIFY_IP_MAX`, `RATE_LIMIT_VERIFY_IP_WINDOW_MS` |
+| Verify-content | Wallet | 5 / hour | `RATE_LIMIT_VERIFY_WALLET_MAX`, `RATE_LIMIT_VERIFY_WALLET_WINDOW_MS` |
+| Publish resource | IP | 20 / min | `RATE_LIMIT_PUBLISH_IP_MAX`, `RATE_LIMIT_PUBLISH_IP_WINDOW_MS` |
+| Publish resource | Wallet | 10 / hour | `RATE_LIMIT_PUBLISH_WALLET_MAX`, `RATE_LIMIT_PUBLISH_WALLET_WINDOW_MS` |
+| Publisher API routes | Per publisher | 60 RPM | `PUBLISHER_RATE_LIMIT_RPM_DEFAULT`, `PUBLISHER_RATE_LIMIT_MAX_RPM` |
+
+**Registration rate limit** (`POST /publishers`): at most `RATE_LIMIT_REGISTER_IP_MAX` (default **10**) registrations per IP within `RATE_LIMIT_REGISTER_IP_WINDOW_MS` (default **1 hour**). This prevents bulk account and API-key creation from a single IP address.
+
+Publishers can inspect and override their own per-publisher limit via `PATCH /publishers/me/rate-limit` (up to `PUBLISHER_RATE_LIMIT_MAX_RPM`).
+
 ## Environment variables
 
 See [`.env.example`](./.env.example) for the full list and descriptions.
