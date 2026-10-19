@@ -37,7 +37,9 @@ jobs:
       SUPABASE_URL: https://placeholder.supabase.co
       SUPABASE_SERVICE_KEY: placeholder_for_ci
       ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
-      ALLOWED_ORIGINS: "*"
+      ALLOWED_ORIGINS: "http://localhost:3000"
+      BASE_URL: http://localhost:3000
+      WEB_APP_URL: http://localhost:3000
 
     steps:
       - uses: actions/checkout@v4
