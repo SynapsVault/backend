@@ -35,6 +35,7 @@ import { getLogger } from "../lib/logger.js";
 import { publishIpRateLimit, publishWalletRateLimit } from "../middleware/rateLimiters.js";
 import { getIdempotencyStore, idempotencyCacheKey } from "../lib/idempotency.js";
 import { parseIdempotencyKey } from "../lib/idempotencyKey.js";
+import { getRequestSignal } from "../lib/requestAbort.js";
 import { buildRegistrationFailureGuidance, explorerTxUrl } from "../lib/registrationGuidance.js";
 import {
   NETWORK_PASSPHRASE,
@@ -103,7 +104,9 @@ router.post(
     // Records the final result under the idempotency key (when keyed), then responds.
     const sendResult = async (status: number, body: unknown) => {
       if (scopedKey) await store.set(scopedKey, { inProgress: false, result: { status, body } });
-      res.status(status).json(body);
+      // After a request timeout (#73) the 503 is already sent; the final
+      // outcome is still recorded above so retries see it.
+      if (!res.headersSent) res.status(status).json(body);
     };
 
     try {
@@ -124,6 +127,11 @@ router.post(
         // Uploads are streamed to disk by multer (#90); read the temp file
         // back into a buffer for storage. Thumbnail generation now happens
         // asynchronously in a worker (#89), so the response does not wait on it.
+        if (getRequestSignal(res)?.aborted) {
+          // Timed out before any work started (#73): release the key.
+          if (scopedKey) await store.delete(scopedKey);
+          return;
+        }
         const fileBuffer = await fs.readFile(req.file.path);
 
         const resource = await createFileResource({
@@ -151,6 +159,12 @@ router.post(
         throw new AppError("VALIDATION_ERROR", "Invalid request body", {
           detail: parsed.error.format(),
         });
+      }
+
+      if (getRequestSignal(res)?.aborted) {
+        // Timed out before any work started (#73): release the key.
+        if (scopedKey) await store.delete(scopedKey);
+        return;
       }
 
       const resource = await createLinkResource({
