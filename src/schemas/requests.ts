@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { config } from "../config.js";
 import { stellarAddressSchema } from "../lib/stellarAddressValidation.js";
+import { priceSchema } from "../lib/priceValidation.js";
 import { webhookEventValues } from "./webhooks.js";
 
 export const publisherRegisterSchema = z
@@ -15,7 +16,7 @@ export const linkPublishSchema = z
   .object({
     title: z.string().min(1),
     description: z.string().optional(),
-    price: z.string().min(1),
+    price: priceSchema,
     walletAddress: stellarAddressSchema.optional(),
     externalUrl: z.url(),
   })
@@ -24,7 +25,7 @@ export const linkPublishSchema = z
 export const filePublishBodySchema = z
   .object({
     title: z.string().min(1),
-    price: z.string().min(1),
+    price: priceSchema,
     description: z.string().optional(),
     walletAddress: stellarAddressSchema.optional(),
   })
@@ -45,14 +46,14 @@ export const registerResourceSchema = z
 
 export const preparePriceSchema = z
   .object({
-    price: z.string().min(1),
+    price: priceSchema,
   })
   .strict();
 
 export const setPriceSchema = z
   .object({
     signedXdr: z.string().min(1),
-    price: z.string().min(1),
+    price: priceSchema,
   })
   .strict();
 
