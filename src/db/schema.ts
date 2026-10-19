@@ -7,6 +7,7 @@ import {
   timestamp,
   pgEnum,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { createId } from "@paralleldrive/cuid2";
 
@@ -40,25 +41,34 @@ export const thumbnailStatusEnum = pgEnum("thumbnail_status_enum", [
 ]);
 
 // Publishers — humans or AI agents that publish resources
-export const publishers = pgTable("publishers", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => createId()),
-  name: text("name").notNull(),
-  email: text("email").notNull().unique(),
-  walletAddress: text("wallet_address").notNull(),
-  apiKeyHash: text("api_key_hash").notNull(),
-  // Per-publisher rate limit in requests per minute. Null means the global
-  // default applies.
-  rateLimitRpm: integer("rate_limit_rpm"),
-  // Webhook delivery configuration. Nullable so publishers can opt in later.
-  webhookUrl: text("webhook_url"),
-  webhookSecret: text("webhook_secret"),
-  // Subscribed WebhookEvent values; null/empty means all events.
-  webhookEvents: text("webhook_events").array(),
-  webhookEnabled: boolean("webhook_enabled").notNull().default(false),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const publishers = pgTable(
+  "publishers",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => createId()),
+    name: text("name").notNull(),
+    email: text("email").notNull().unique(),
+    walletAddress: text("wallet_address").notNull(),
+    apiKeyHash: text("api_key_hash").notNull(),
+    // Per-publisher rate limit in requests per minute. Null means the global
+    // default applies.
+    rateLimitRpm: integer("rate_limit_rpm"),
+    // Webhook delivery configuration. Nullable so publishers can opt in later.
+    webhookUrl: text("webhook_url"),
+    webhookSecret: text("webhook_secret"),
+    // Subscribed WebhookEvent values; null/empty means all events.
+    webhookEvents: text("webhook_events").array(),
+    webhookEnabled: boolean("webhook_enabled").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Every authenticated request looks up a publisher by api_key_hash.
+    // The unique index makes that lookup O(log n) instead of a sequential
+    // scan, and also enforces hash uniqueness at the DB level (#41).
+    apiKeyHashIdx: uniqueIndex("idx_publishers_api_key_hash").on(table.apiKeyHash),
+  }),
+);
 
 // Resources — digital assets published on the marketplace
 export const resources = pgTable(
