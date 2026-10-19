@@ -34,6 +34,7 @@ import { config } from "../config.js";
 import { getLogger } from "../lib/logger.js";
 import { publishIpRateLimit, publishWalletRateLimit } from "../middleware/rateLimiters.js";
 import { getIdempotencyStore, idempotencyCacheKey } from "../lib/idempotency.js";
+import { parseIdempotencyKey } from "../lib/idempotencyKey.js";
 import { buildRegistrationFailureGuidance, explorerTxUrl } from "../lib/registrationGuidance.js";
 import {
   NETWORK_PASSPHRASE,
@@ -82,7 +83,7 @@ router.post(
     // Idempotency (#114): if the client supplies an Idempotency-Key, a retry
     // with the same key returns the original result instead of creating a
     // duplicate. Keys are scoped per publisher.
-    const idemKey = req.header("Idempotency-Key");
+    const idemKey = parseIdempotencyKey(req.header("Idempotency-Key"));
     const store = getIdempotencyStore();
     const scopedKey = idemKey ? idempotencyCacheKey(publisher.id, idemKey) : null;
 
