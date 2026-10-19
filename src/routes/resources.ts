@@ -392,6 +392,7 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
 
   const { buffer, mimeType } = fileContent;
   res.setHeader("Content-Type", mimeType);
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader(
     "Content-Disposition",
     `attachment; filename="${resource.storagePath.split("/").pop()}"`,
