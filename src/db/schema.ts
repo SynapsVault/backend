@@ -57,6 +57,9 @@ export const publishers = pgTable("publishers", {
   // Subscribed WebhookEvent values; null/empty means all events.
   webhookEvents: text("webhook_events").array(),
   webhookEnabled: boolean("webhook_enabled").notNull().default(false),
+  // Set when the publisher rotates their API key. Any key whose hash matches
+  // a row with a non-null api_key_revoked_at is rejected by apiKeyAuth (#40).
+  apiKeyRevokedAt: timestamp("api_key_revoked_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
