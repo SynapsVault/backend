@@ -56,7 +56,20 @@ export function isOriginAllowed(origin: string, allowedOrigins: string[]): boole
   });
 }
 
+/** Cap on remembered rejected origins so attacker-supplied values cannot grow memory unbounded. */
+export const MAX_WARNED_ORIGINS = 500;
 const warnedOrigins = new Set<string>();
+
+/** Records an origin as warned; returns true if it was newly recorded. Evicts the oldest at the cap. */
+export function markOriginWarned(origin: string, set: Set<string> = warnedOrigins, max = MAX_WARNED_ORIGINS): boolean {
+  if (set.has(origin)) return false;
+  if (set.size >= max) {
+    const oldest = set.values().next().value;
+    if (oldest !== undefined) set.delete(oldest);
+  }
+  set.add(origin);
+  return true;
+}
 
 export function createCorsOptions(): CorsOptions {
   const isProduction = config.NODE_ENV === "production";
@@ -75,8 +88,7 @@ export function createCorsOptions(): CorsOptions {
           }
           // Omit CORS headers (the browser blocks the response) rather than
           // erroring, which would turn every such request into a 500.
-          if (!warnedOrigins.has(origin)) {
-            warnedOrigins.add(origin);
+          if (markOriginWarned(origin)) {
             rootLogger.warn(
               { event: "cors_origin_rejected", origin, allowedOrigins },
               "origin not in ALLOWED_ORIGINS / WEB_APP_URL; browser requests will be blocked",
@@ -86,7 +98,7 @@ export function createCorsOptions(): CorsOptions {
         }
       : true,
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: isProduction ? [...X402_ALLOWED_HEADERS] : "*",
     exposedHeaders: isProduction ? [...X402_EXPOSED_HEADERS] : "*",
   };

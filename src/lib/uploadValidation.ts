@@ -1,3 +1,5 @@
+import { isTextMimeType, validateTextContent } from "./textUploadValidation.js";
+
 /**
  * Upload guardrails (#87): content-type allowlist and declared-vs-detected
  * content-type validation.
@@ -148,6 +150,11 @@ export function validateUpload(
       status: 415,
       error: `Declared content type "${declared}" does not match detected "${detected}"`,
     };
+  }
+
+  if (isTextMimeType(declared)) {
+    const textError = validateTextContent(buffer);
+    if (textError) return { ok: false, status: 415, error: textError };
   }
 
   return { ok: true, contentType: declared };

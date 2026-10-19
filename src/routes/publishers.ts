@@ -9,7 +9,7 @@ import {
   updateRateLimitSchema,
   updateWebhookConfigSchema,
 } from "../schemas/requests.js";
-import { registerPublisher, getPublisherResources } from "../services/publisherService.js";
+import { registerPublisher, getPublisherResources, rotateApiKey } from "../services/publisherService.js";
 import { deliver, webhookUrlProblem } from "../services/webhookService.js";
 import { eq, inArray, sum, count, sql, desc } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -78,6 +78,16 @@ router.get("/publishers/me", apiKeyAuth, async (req, res) => {
 router.get("/publishers/me/resources", apiKeyAuth, async (req, res) => {
   const resources = await getPublisherResources(req.publisher!.id);
   res.json(resources);
+});
+
+// POST /publishers/me/api-keys/rotate — issue a new key, invalidate the old one (#40)
+// The new key is returned once in plaintext; the old key is immediately invalid.
+router.post("/publishers/me/api-keys/rotate", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const newApiKey = await rotateApiKey(req.publisher!.id);
+  res.json({
+    apiKey: newApiKey, // shown once — store it securely
+    rotatedAt: new Date().toISOString(),
+  });
 });
 
 // GET /publishers/me/analytics — earnings and stats (authenticated)
