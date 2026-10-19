@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { stellarAddressSchema } from "../lib/stellarAddressValidation.js";
 import { priceSchema } from "../lib/priceValidation.js";
 import { webhookEventValues } from "./webhooks.js";
+import { httpUrlSchema } from "../lib/externalUrlValidation.js";
 
 export const publisherRegisterSchema = z
   .object({
@@ -18,7 +19,7 @@ export const linkPublishSchema = z
     description: z.string().optional(),
     price: priceSchema,
     walletAddress: stellarAddressSchema.optional(),
-    externalUrl: z.url(),
+    externalUrl: httpUrlSchema,
   })
   .strict();
 

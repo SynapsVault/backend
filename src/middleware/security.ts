@@ -13,31 +13,46 @@ const SWAGGER_CDN = "https://unpkg.com";
 // X-Content-Type-Options, X-Frame-Options, Referrer-Policy, etc. We only
 // override the Content-Security-Policy so that the JSON API stays strict while
 // the Swagger UI at /docs continues to load.
-export function securityHeaders(): RequestHandler {
+function buildHelmet(relaxed: boolean): RequestHandler {
   return helmet({
-    contentSecurityPolicy: {
-      useDefaults: true,
-      directives: {
-        defaultSrc: ["'self'"],
-        // The Swagger bundle comes from unpkg; its init block is inline.
-        scriptSrc: ["'self'", "'unsafe-inline'", SWAGGER_CDN],
-        // Swagger injects inline styles and pulls its stylesheet from unpkg.
-        styleSrc: ["'self'", "'unsafe-inline'", SWAGGER_CDN],
-        // Swagger UI renders icons as data: URIs.
-        imgSrc: ["'self'", "data:", SWAGGER_CDN],
-        // The UI fetches /openapi.json from the same origin.
-        connectSrc: ["'self'"],
-        fontSrc: ["'self'", "data:", SWAGGER_CDN],
-        objectSrc: ["'none'"],
-        frameAncestors: ["'none'"],
-        baseUri: ["'self'"],
-        upgradeInsecureRequests: null,
-      },
-    },
+    contentSecurityPolicy: relaxed
+      ? {
+          useDefaults: true,
+          directives: {
+            defaultSrc: ["'self'"],
+            // The Swagger bundle comes from unpkg; its init block is inline.
+            scriptSrc: ["'self'", "'unsafe-inline'", SWAGGER_CDN],
+            // Swagger injects inline styles and pulls its stylesheet from unpkg.
+            styleSrc: ["'self'", "'unsafe-inline'", SWAGGER_CDN],
+            // Swagger UI renders icons as data: URIs.
+            imgSrc: ["'self'", "data:", SWAGGER_CDN],
+            // The UI fetches /openapi.json from the same origin.
+            connectSrc: ["'self'"],
+            fontSrc: ["'self'", "data:", SWAGGER_CDN],
+            objectSrc: ["'none'"],
+            frameAncestors: ["'none'"],
+            baseUri: ["'self'"],
+            upgradeInsecureRequests: null,
+          },
+        }
+      : {
+          // Strict Helmet default policy (no 'unsafe-inline' for scripts).
+          useDefaults: true,
+          directives: { upgradeInsecureRequests: null },
+        },
     // The API serves JSON and downloadable resources to third-party clients;
     // a strict same-origin embedder policy would break those cross-origin reads.
     crossOriginEmbedderPolicy: false,
     // Allow Swagger assets and resource downloads to be consumed cross-origin.
     crossOriginResourcePolicy: { policy: "cross-origin" },
   });
+}
+
+export function securityHeaders(): RequestHandler {
+  const strict = buildHelmet(false);
+  const relaxed = buildHelmet(true);
+  return (req, res, next) => {
+    const isDocs = req.path === "/docs" || req.path.startsWith("/docs/");
+    return (isDocs ? relaxed : strict)(req, res, next);
+  };
 }

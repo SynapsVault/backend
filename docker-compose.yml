@@ -12,7 +12,7 @@ services:
     env_file: .env
     environment:
       PORT: 3000
-      DATABASE_URL: postgresql://synapse:synapse@postgres:5432/synapsvault
+      DATABASE_URL: postgresql://synapse:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/synapsvault
       NODE_ENV: ${NODE_ENV:-development}
       # The ledger checkpoint is stored in Postgres; this file path is only
       # used as a fallback when the database is unavailable.
@@ -45,12 +45,12 @@ services:
     container_name: synapsvault-postgres
     environment:
       POSTGRES_USER: synapse
-      POSTGRES_PASSWORD: synapse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: synapsvault
       POSTGRES_INITDB_ARGS: "--encoding=UTF8"
 
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
