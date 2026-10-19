@@ -177,3 +177,6 @@ demand) to seed a testnet catalog and verify it end to end.
 ## License
 
 MIT © 2025 Busiii-adetiba
+## Database TLS
+
+Outside localhost the Postgres server certificate is verified (`rejectUnauthorized: true`). If your database uses a private CA, set `DATABASE_CA_CERT` to the PEM-encoded CA bundle (literal `\n` sequences are accepted for single-line env vars).
