@@ -96,13 +96,16 @@ describe("POST /publishers — registration (#294)", () => {
     mockRegisterPublisher.mockReset();
   });
 
+  // A real Stellar ed25519 public key (G..., 56 chars) so the schema passes.
+  const VALID_WALLET = "GDEJJLXV2CNHF5HEGX34MU4G6L4PRVUAGD4ANF77ZDYTQJKSDSDYVVI6";
+
   it("registers a publisher and returns the one-time API key", async () => {
     mockRegisterPublisher.mockResolvedValue({
       publisher: {
         id: "pub-1",
         name: "Alice",
         email: "alice@example.com",
-        walletAddress: "GALICE",
+        walletAddress: VALID_WALLET,
         createdAt: new Date("2026-01-01"),
       },
       apiKey: "mv_freshkey",
@@ -111,7 +114,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(201);
@@ -119,13 +122,13 @@ describe("POST /publishers — registration (#294)", () => {
       id: "pub-1",
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
       apiKey: "mv_freshkey",
     });
     expect(mockRegisterPublisher).toHaveBeenCalledWith({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
   });
 
@@ -133,7 +136,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "not-an-email",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(400);
@@ -143,7 +146,7 @@ describe("POST /publishers — registration (#294)", () => {
   it("returns 400 when a required field is missing", async () => {
     const res = await request(createTestApp()).post("/publishers").send({
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(400);
@@ -154,7 +157,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
       isAdmin: true,
     });
 
@@ -170,7 +173,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(409);
@@ -187,7 +190,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(409);
@@ -200,7 +203,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(500);

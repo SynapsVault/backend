@@ -2,7 +2,7 @@ import { Router, type Router as RouterType } from "express";
 import type { z } from "zod/v4";
 import { AppError } from "../lib/errors.js";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
-import { publisherRateLimit } from "../middleware/rateLimiters.js";
+import { publisherRateLimit, registerIpRateLimit } from "../middleware/rateLimiters.js";
 import { validate } from "../middleware/validate.js";
 import {
   publisherRegisterSchema,
@@ -21,7 +21,7 @@ const router: RouterType = Router();
 type UpdateWebhookConfig = z.infer<typeof updateWebhookConfigSchema>;
 
 // POST /publishers — register a new publisher (public)
-router.post("/publishers", validate(publisherRegisterSchema), async (req, res) => {
+router.post("/publishers", registerIpRateLimit, validate(publisherRegisterSchema), async (req, res) => {
   try {
     const { publisher, apiKey } = await registerPublisher(req.body);
     res.status(201).json({
