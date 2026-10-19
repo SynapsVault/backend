@@ -35,6 +35,7 @@ import { getLogger } from "../lib/logger.js";
 import { publishIpRateLimit, publishWalletRateLimit } from "../middleware/rateLimiters.js";
 import { getIdempotencyStore, idempotencyCacheKey } from "../lib/idempotency.js";
 import { parseIdempotencyKey } from "../lib/idempotencyKey.js";
+import { decodeNewCreator, decodeSetPrice } from "../services/signedTxDecode.js";
 import { getRequestSignal } from "../lib/requestAbort.js";
 import { buildRegistrationFailureGuidance, explorerTxUrl } from "../lib/registrationGuidance.js";
 import {
@@ -797,6 +798,9 @@ router.post(
       });
     }
 
+    // Take the price from the signed operation; reject a body that disagrees (#74).
+    const onChainPrice = decodeSetPrice(signedXdr, price);
+
     const result = await submitSignedTx(signedXdr, expected);
 
     if (result.status === "failed") {
@@ -815,7 +819,7 @@ router.post(
     // Sync the DB price to match the on-chain value
     const [updated] = await db
       .update(resources)
-      .set({ price })
+      .set({ price: onChainPrice })
       .where(eq(resources.id, resourceId))
       .returning();
 
@@ -881,6 +885,9 @@ router.post(
       });
     }
 
+    // Take the new owner from the signed operation; reject a mismatch (#74).
+    const onChainCreator = decodeNewCreator(signedXdr, newCreator);
+
     const result = await submitSignedTx(signedXdr, expected);
 
     if (result.status === "failed") {
@@ -898,7 +905,7 @@ router.post(
 
     const [updated] = await db
       .update(resources)
-      .set({ walletAddress: newCreator })
+      .set({ walletAddress: onChainCreator })
       .where(eq(resources.id, resourceId))
       .returning();
 
