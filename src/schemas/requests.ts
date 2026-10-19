@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { config } from "../config.js";
 import { webhookEventValues } from "./webhooks.js";
+import { httpUrlSchema } from "../lib/externalUrlValidation.js";
 
 export const publisherRegisterSchema = z
   .object({
@@ -16,7 +17,7 @@ export const linkPublishSchema = z
     description: z.string().optional(),
     price: z.string().min(1),
     walletAddress: z.string().optional(),
-    externalUrl: z.url(),
+    externalUrl: httpUrlSchema,
   })
   .strict();
 
