@@ -25,6 +25,7 @@ const authedPublisher = {
   email: "alice@example.com",
   walletAddress: "GALICE",
   apiKeyHash: VALID_API_KEY_HASH,
+  apiKeyRevokedAt: null,
   createdAt: new Date("2026-01-01"),
 };
 

@@ -14,8 +14,21 @@ import { startPoolMetrics, stopPoolMetrics } from "./db/client.js";
 import { startRetryPendingWorker, stopRetryPendingWorker } from "./workers/retryPendingWorker.js";
 import { startEventListener, stopEventListener } from "./workers/eventListener.js";
 import { closeRateLimitStore } from "./lib/rateLimit/index.js";
+import { useSharedIdempotencyStore } from "./lib/idempotency.js";
+import {
+  createPostgresRowStore,
+  createSharedIdempotencyStore,
+  type PgSql,
+} from "./lib/idempotencyPgStore.js";
 
 initSentry();
+
+// Share idempotency records across replicas via Postgres (#71).
+useSharedIdempotencyStore(
+  createSharedIdempotencyStore(createPostgresRowStore(pgClient as unknown as PgSql), {
+    defaultTtlMs: config.IDEMPOTENCY_TTL_MS,
+  }),
+);
 
 const app = createApp();
 

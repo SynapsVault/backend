@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { isOriginAllowed, parseAllowedOrigins, X402_ALLOWED_HEADERS, X402_EXPOSED_HEADERS } from "./cors.js";
+import { isOriginAllowed, markOriginWarned, parseAllowedOrigins, X402_ALLOWED_HEADERS, X402_EXPOSED_HEADERS } from "./cors.js";
 
 vi.mock("./config.js", () => ({
   config: {
@@ -76,5 +76,22 @@ describe("createCorsOptions", () => {
         resolve();
       });
     });
+  });
+});
+
+describe("createCorsOptions methods", () => {
+  it("allows PATCH in preflight", async () => {
+    const { createCorsOptions } = await import("./cors.js");
+    expect(createCorsOptions().methods).toContain("PATCH");
+  });
+});
+
+describe("markOriginWarned", () => {
+  it("never exceeds the maximum size", () => {
+    const set = new Set<string>();
+    for (let i = 0; i < 20; i++) markOriginWarned(`https://evil${i}.example`, set, 5);
+    expect(set.size).toBe(5);
+    expect(set.has("https://evil19.example")).toBe(true);
+    expect(set.has("https://evil0.example")).toBe(false);
   });
 });

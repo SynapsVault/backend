@@ -290,6 +290,18 @@ const envSchema = z.object({
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 });
 
+// In production the localhost defaults would leak into accessUrl values and the
+// CORS allowlist, so both URLs must be set explicitly.
+if (envWithDefaults.NODE_ENV === "production") {
+  const missing = (["BASE_URL", "WEB_APP_URL"] as const).filter((k) => !envWithDefaults[k]?.trim());
+  if (missing.length > 0) {
+    for (const key of missing) {
+      console.error(`[config] ${key}: required when NODE_ENV=production (no localhost default is applied)`);
+    }
+    process.exit(1);
+  }
+}
+
 const parsed = envSchema.safeParse(envWithDefaults);
 
 if (!parsed.success) {

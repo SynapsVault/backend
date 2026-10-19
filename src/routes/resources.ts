@@ -1,4 +1,5 @@
 import { Router, type Router as RouterType } from "express";
+import { attachmentDisposition } from "../lib/contentDisposition.js";
 import { promises as fs } from "node:fs";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
 import { requestSignatureAuth } from "../middleware/requestSignatureAuth.js";
@@ -35,6 +36,9 @@ import { getLogger } from "../lib/logger.js";
 import { publishIpRateLimit, publishWalletRateLimit } from "../middleware/rateLimiters.js";
 import { IDEMPOTENCY_IN_PROGRESS_TTL_MS } from "../lib/idempotency.js";
 import { getIdempotencyStore, idempotencyCacheKey } from "../lib/idempotency.js";
+import { parseIdempotencyKey } from "../lib/idempotencyKey.js";
+import { decodeNewCreator, decodeSetPrice } from "../services/signedTxDecode.js";
+import { getRequestSignal } from "../lib/requestAbort.js";
 import { buildRegistrationFailureGuidance, explorerTxUrl } from "../lib/registrationGuidance.js";
 import {
   NETWORK_PASSPHRASE,
@@ -83,12 +87,12 @@ router.post(
     // Idempotency (#114): if the client supplies an Idempotency-Key, a retry
     // with the same key returns the original result instead of creating a
     // duplicate. Keys are scoped per publisher.
-    const idemKey = req.header("Idempotency-Key");
+    const idemKey = parseIdempotencyKey(req.header("Idempotency-Key"));
     const store = getIdempotencyStore();
     const scopedKey = idemKey ? idempotencyCacheKey(publisher.id, idemKey) : null;
 
     if (scopedKey) {
-      const existing = store.get(scopedKey);
+      const existing = await store.get(scopedKey);
       if (existing) {
         if (existing.inProgress) {
           // A concurrent request with the same key is still running.
@@ -97,13 +101,15 @@ router.post(
         res.status(existing.result.status).json(existing.result.body);
         return;
       }
-      store.set(scopedKey, { inProgress: true }, IDEMPOTENCY_IN_PROGRESS_TTL_MS);
+      await store.set(scopedKey, { inProgress: true }, IDEMPOTENCY_IN_PROGRESS_TTL_MS);
     }
 
     // Records the final result under the idempotency key (when keyed), then responds.
-    const sendResult = (status: number, body: unknown) => {
-      if (scopedKey) store.set(scopedKey, { inProgress: false, result: { status, body } });
-      res.status(status).json(body);
+    const sendResult = async (status: number, body: unknown) => {
+      if (scopedKey) await store.set(scopedKey, { inProgress: false, result: { status, body } });
+      // After a request timeout (#73) the 503 is already sent; the final
+      // outcome is still recorded above so retries see it.
+      if (!res.headersSent) res.status(status).json(body);
     };
 
     try {
@@ -113,7 +119,7 @@ router.post(
         if (!parsed.success) {
           // Validation failures aren't a committed result — release the key so
           // a corrected retry can proceed.
-          if (scopedKey) store.delete(scopedKey);
+          if (scopedKey) await store.delete(scopedKey);
           throw new AppError("VALIDATION_ERROR", "Invalid request body", {
             detail: parsed.error.format(),
           });
@@ -124,6 +130,11 @@ router.post(
         // Uploads are streamed to disk by multer (#90); read the temp file
         // back into a buffer for storage. Thumbnail generation now happens
         // asynchronously in a worker (#89), so the response does not wait on it.
+        if (getRequestSignal(res)?.aborted) {
+          // Timed out before any work started (#73): release the key.
+          if (scopedKey) await store.delete(scopedKey);
+          return;
+        }
         const fileBuffer = await fs.readFile(req.file.path);
 
         const resource = await createFileResource({
@@ -137,7 +148,7 @@ router.post(
           mimeType: req.file.mimetype,
         });
 
-        sendResult(201, {
+        await sendResult(201, {
           ...resource,
           accessUrl: `${config.BASE_URL}/resources/${resource.id}`,
         });
@@ -147,10 +158,16 @@ router.post(
       // Link resource
       const parsed = linkPublishSchema.safeParse(req.body);
       if (!parsed.success) {
-        if (scopedKey) store.delete(scopedKey);
+        if (scopedKey) await store.delete(scopedKey);
         throw new AppError("VALIDATION_ERROR", "Invalid request body", {
           detail: parsed.error.format(),
         });
+      }
+
+      if (getRequestSignal(res)?.aborted) {
+        // Timed out before any work started (#73): release the key.
+        if (scopedKey) await store.delete(scopedKey);
+        return;
       }
 
       const resource = await createLinkResource({
@@ -162,14 +179,14 @@ router.post(
         externalUrl: parsed.data.externalUrl,
       });
 
-      sendResult(201, {
+      await sendResult(201, {
         ...resource,
         accessUrl: `${config.BASE_URL}/resources/${resource.id}`,
       });
     } catch (err) {
       // Publish failed — release the key so the client can retry rather than
       // being stuck behind a stale in-progress marker.
-      if (scopedKey) store.delete(scopedKey);
+      if (scopedKey) await store.delete(scopedKey);
       throw err;
     } finally {
       // Always remove the disk-stored temp file, whether the request succeeded
@@ -393,10 +410,8 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
 
   const { buffer, mimeType } = fileContent;
   res.setHeader("Content-Type", mimeType);
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename="${resource.storagePath.split("/").pop()}"`,
-  );
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Disposition", attachmentDisposition(resource.storagePath.split("/").pop() ?? ""));
   res.send(buffer);
 });
 
@@ -783,6 +798,9 @@ router.post(
       });
     }
 
+    // Take the price from the signed operation; reject a body that disagrees (#74).
+    const onChainPrice = decodeSetPrice(signedXdr, price);
+
     const result = await submitSignedTx(signedXdr, expected);
 
     if (result.status === "failed") {
@@ -801,7 +819,7 @@ router.post(
     // Sync the DB price to match the on-chain value
     const [updated] = await db
       .update(resources)
-      .set({ price })
+      .set({ price: onChainPrice })
       .where(eq(resources.id, resourceId))
       .returning();
 
@@ -867,6 +885,9 @@ router.post(
       });
     }
 
+    // Take the new owner from the signed operation; reject a mismatch (#74).
+    const onChainCreator = decodeNewCreator(signedXdr, newCreator);
+
     const result = await submitSignedTx(signedXdr, expected);
 
     if (result.status === "failed") {
@@ -884,7 +905,7 @@ router.post(
 
     const [updated] = await db
       .update(resources)
-      .set({ walletAddress: newCreator })
+      .set({ walletAddress: onChainCreator })
       .where(eq(resources.id, resourceId))
       .returning();
 
