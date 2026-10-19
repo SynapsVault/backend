@@ -12,8 +12,11 @@ const isLocal = dbUrl.includes("localhost") || dbUrl.includes("127.0.0.1");
 const sanitizedUrl = dbUrl.replace(/:([^:@]+)@/, ":***@");
 rootLogger.info({ url: sanitizedUrl, ssl: !isLocal }, "DB connecting");
 
+// Verify the server certificate by default. A private CA can be supplied via
+// DATABASE_CA_CERT (PEM contents; literal "\n" sequences are accepted).
+const caCert = process.env.DATABASE_CA_CERT?.replace(/\\n/g, "\n");
 const client = postgres(dbUrl, {
-  ssl: isLocal ? false : { rejectUnauthorized: false },
+  ssl: isLocal ? false : { rejectUnauthorized: true, ...(caCert ? { ca: caCert } : {}) },
   max: config.DB_POOL_MAX,
   // postgres.js takes these two in seconds; config is in milliseconds.
   idle_timeout: Math.ceil(config.DB_POOL_IDLE_TIMEOUT_MS / 1000),

@@ -25,6 +25,8 @@ describe("securityHeaders", () => {
     expect(res.headers["referrer-policy"]).toBeDefined();
     // Helmet sets HSTS so production deployments are forced onto HTTPS.
     expect(res.headers["strict-transport-security"]).toContain("max-age=");
+    // Only /docs gets the relaxed policy; API responses stay strict.
+    expect(res.headers["content-security-policy"]).not.toContain("script-src 'self' 'unsafe-inline'");
   });
 
   it("emits a CSP that lets the Swagger UI assets and inline bootstrap load", async () => {

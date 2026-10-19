@@ -176,8 +176,8 @@ async function getOrCreateTestWallet(): Promise<TestWallet> {
   const keypair = Keypair.random();
   const publicKey = keypair.publicKey();
   info(`generated fresh test wallet: ${publicKey}`);
-  info(`  secret: ${keypair.secret()}`);
-  info(`  save these to .env as E2E_PUBLIC_KEY / E2E_SECRET_KEY to reuse`);
+  info("  secret key not printed; generate your own keypair and set E2E_SECRET_KEY in .env to reuse");
+  info("  save the public key to .env as E2E_PUBLIC_KEY to reuse");
 
   info("funding via Friendbot…");
   const res = await fetch(`https://friendbot.stellar.org?addr=${publicKey}`);

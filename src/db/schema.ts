@@ -8,6 +8,7 @@ import {
   pgEnum,
   index,
   uniqueIndex,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { createId } from "@paralleldrive/cuid2";
 
@@ -60,6 +61,9 @@ export const publishers = pgTable(
     // Subscribed WebhookEvent values; null/empty means all events.
     webhookEvents: text("webhook_events").array(),
     webhookEnabled: boolean("webhook_enabled").notNull().default(false),
+    // Set when the publisher rotates their API key. Any key whose hash matches
+    // a row with a non-null api_key_revoked_at is rejected by apiKeyAuth (#40).
+    apiKeyRevokedAt: timestamp("api_key_revoked_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => ({
@@ -241,4 +245,11 @@ export const ledgerCheckpoints = pgTable("ledger_checkpoints", {
   id: text("id").primaryKey(),
   lastLedger: integer("last_ledger").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Idempotency records shared across replicas (#71).
+export const idempotencyRecords = pgTable("idempotency_records", {
+  key: text("key").primaryKey(),
+  record: jsonb("record").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
 });
