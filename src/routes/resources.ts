@@ -1,4 +1,5 @@
 import { Router, type Router as RouterType } from "express";
+import { attachmentDisposition } from "../lib/contentDisposition.js";
 import { promises as fs } from "node:fs";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
 import { requestSignatureAuth } from "../middleware/requestSignatureAuth.js";
@@ -393,10 +394,7 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
   const { buffer, mimeType } = fileContent;
   res.setHeader("Content-Type", mimeType);
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename="${resource.storagePath.split("/").pop()}"`,
-  );
+  res.setHeader("Content-Disposition", attachmentDisposition(resource.storagePath.split("/").pop() ?? ""));
   res.send(buffer);
 });
 
