@@ -29,6 +29,9 @@ const defaultStore = createTtlCache<IdempotencyRecord>({
   cacheName: "idempotency",
 });
 
+/** Abandoned in-progress markers expire after twice the request timeout. */
+export const IDEMPOTENCY_IN_PROGRESS_TTL_MS = config.REQUEST_TIMEOUT_MS * 2;
+
 export function getIdempotencyStore(): TtlCache<IdempotencyRecord> {
   return defaultStore;
 }
