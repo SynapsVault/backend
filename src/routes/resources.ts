@@ -88,7 +88,7 @@ router.post(
     const scopedKey = idemKey ? idempotencyCacheKey(publisher.id, idemKey) : null;
 
     if (scopedKey) {
-      const existing = store.get(scopedKey);
+      const existing = await store.get(scopedKey);
       if (existing) {
         if (existing.inProgress) {
           // A concurrent request with the same key is still running.
@@ -97,12 +97,12 @@ router.post(
         res.status(existing.result.status).json(existing.result.body);
         return;
       }
-      store.set(scopedKey, { inProgress: true });
+      await store.set(scopedKey, { inProgress: true });
     }
 
     // Records the final result under the idempotency key (when keyed), then responds.
-    const sendResult = (status: number, body: unknown) => {
-      if (scopedKey) store.set(scopedKey, { inProgress: false, result: { status, body } });
+    const sendResult = async (status: number, body: unknown) => {
+      if (scopedKey) await store.set(scopedKey, { inProgress: false, result: { status, body } });
       res.status(status).json(body);
     };
 
@@ -113,7 +113,7 @@ router.post(
         if (!parsed.success) {
           // Validation failures aren't a committed result — release the key so
           // a corrected retry can proceed.
-          if (scopedKey) store.delete(scopedKey);
+          if (scopedKey) await store.delete(scopedKey);
           throw new AppError("VALIDATION_ERROR", "Invalid request body", {
             detail: parsed.error.format(),
           });
@@ -137,7 +137,7 @@ router.post(
           mimeType: req.file.mimetype,
         });
 
-        sendResult(201, {
+        await sendResult(201, {
           ...resource,
           accessUrl: `${config.BASE_URL}/resources/${resource.id}`,
         });
@@ -147,7 +147,7 @@ router.post(
       // Link resource
       const parsed = linkPublishSchema.safeParse(req.body);
       if (!parsed.success) {
-        if (scopedKey) store.delete(scopedKey);
+        if (scopedKey) await store.delete(scopedKey);
         throw new AppError("VALIDATION_ERROR", "Invalid request body", {
           detail: parsed.error.format(),
         });
@@ -162,14 +162,14 @@ router.post(
         externalUrl: parsed.data.externalUrl,
       });
 
-      sendResult(201, {
+      await sendResult(201, {
         ...resource,
         accessUrl: `${config.BASE_URL}/resources/${resource.id}`,
       });
     } catch (err) {
       // Publish failed — release the key so the client can retry rather than
       // being stuck behind a stale in-progress marker.
-      if (scopedKey) store.delete(scopedKey);
+      if (scopedKey) await store.delete(scopedKey);
       throw err;
     } finally {
       // Always remove the disk-stored temp file, whether the request succeeded

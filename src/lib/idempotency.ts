@@ -29,6 +29,17 @@ const defaultStore = createTtlCache<IdempotencyRecord>({
   cacheName: "idempotency",
 });
 
+// Shared (Postgres-backed) store installed at boot so retries that land on a
+// different replica see the original result (#71). When unset (tests, local
+// scripts) the in-memory store above is used.
+let sharedStore: unknown;
+
+export function useSharedIdempotencyStore(store: unknown): void {
+  sharedStore = store;
+}
+
+// Typed as TtlCache for existing callers; the shared store has the same
+// methods but returns promises, so route code must `await` store calls.
 export function getIdempotencyStore(): TtlCache<IdempotencyRecord> {
-  return defaultStore;
+  return (sharedStore ?? defaultStore) as TtlCache<IdempotencyRecord>;
 }

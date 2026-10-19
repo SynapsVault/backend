@@ -7,6 +7,7 @@ import {
   timestamp,
   pgEnum,
   index,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { createId } from "@paralleldrive/cuid2";
 
@@ -231,4 +232,11 @@ export const ledgerCheckpoints = pgTable("ledger_checkpoints", {
   id: text("id").primaryKey(),
   lastLedger: integer("last_ledger").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Idempotency records shared across replicas (#71).
+export const idempotencyRecords = pgTable("idempotency_records", {
+  key: text("key").primaryKey(),
+  record: jsonb("record").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
 });
