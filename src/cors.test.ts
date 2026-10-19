@@ -78,3 +78,10 @@ describe("createCorsOptions", () => {
     });
   });
 });
+
+describe("createCorsOptions methods", () => {
+  it("allows PATCH in preflight", async () => {
+    const { createCorsOptions } = await import("./cors.js");
+    expect(createCorsOptions().methods).toContain("PATCH");
+  });
+});
