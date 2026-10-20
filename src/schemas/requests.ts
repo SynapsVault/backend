@@ -8,7 +8,9 @@ import { httpUrlSchema } from "../lib/externalUrlValidation.js";
 export const publisherRegisterSchema = z
   .object({
     name: z.string().min(1),
-    email: z.email(),
+    // Normalise email at the boundary: trim whitespace and lowercase so the
+    // unique constraint reliably catches case-insensitive duplicates (#39).
+    email: z.email().transform((e) => e.trim().toLowerCase()),
     walletAddress: stellarAddressSchema,
   })
   .strict();

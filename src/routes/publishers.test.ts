@@ -208,6 +208,51 @@ describe("POST /publishers — registration (#294)", () => {
 
     expect(res.status).toBe(500);
   });
+
+  // ── Email normalisation (#39) ──────────────────────────────────────────────
+
+  it("normalises a mixed-case email before passing it to registerPublisher (#39)", async () => {
+    mockRegisterPublisher.mockResolvedValue({
+      publisher: {
+        id: "pub-2",
+        name: "Ada",
+        email: "ada@x.com",
+        walletAddress: VALID_WALLET,
+        createdAt: new Date("2026-01-01"),
+      },
+      apiKey: "mv_freshkey2",
+    });
+
+    const res = await request(createTestApp()).post("/publishers").send({
+      name: "Ada",
+      email: "Ada@X.Com",
+      walletAddress: VALID_WALLET,
+    });
+
+    expect(res.status).toBe(201);
+    // The service must receive the normalised (lowercased, trimmed) email.
+    expect(mockRegisterPublisher).toHaveBeenCalledWith(
+      expect.objectContaining({ email: "ada@x.com" }),
+    );
+  });
+
+  it("returns 409 when a differently-cased email already exists (#39)", async () => {
+    mockRegisterPublisher.mockRejectedValue(
+      Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+      }),
+    );
+
+    const res = await request(createTestApp()).post("/publishers").send({
+      name: "Ada",
+      // Email is normalised to ada@x.com, which is already taken.
+      email: "ADA@X.COM",
+      walletAddress: VALID_WALLET,
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("CONFLICT");
+  });
 });
 
 describe("GET /publishers/me — auth enforcement (#294)", () => {

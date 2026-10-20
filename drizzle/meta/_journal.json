@@ -92,6 +92,13 @@
       "when": 1761004800000,
       "tag": "0014_publisher_signing_secret",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1761177600000,
+      "tag": "0015_lowercase_publisher_email",
+      "breakpoints": true
     }
   ]
 }
