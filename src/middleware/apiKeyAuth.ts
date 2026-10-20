@@ -31,6 +31,11 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     throw new AppError("UNAUTHORIZED", "Invalid API key");
   }
 
+  // Reject keys that have been rotated / revoked (#40).
+  if (publisher.apiKeyRevokedAt !== null) {
+    throw new AppError("UNAUTHORIZED", "API key has been revoked");
+  }
+
   req.publisher = publisher;
   next();
 }

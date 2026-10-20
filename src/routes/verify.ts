@@ -5,7 +5,7 @@ import { and, eq, desc, inArray, isNull, sum, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { resources, verifications, payments } from "../db/schema.js";
 import { checkOriginality } from "../services/verificationService.js";
-import { emitToPublisher } from "../services/webhookService.js";
+import { enqueueWebhookEvent } from "../services/webhookService.js";
 
 import { config } from "../config.js";
 import { AppError } from "../lib/errors.js";
@@ -172,7 +172,7 @@ router.post(
         .returning({ publisherId: resources.publisherId, title: resources.title });
 
       if (updated && shouldList) {
-        void emitToPublisher(updated.publisherId, "resource.listed", {
+        void enqueueWebhookEvent(updated.publisherId, "resource.listed", {
           resourceId,
           title: updated.title,
         });

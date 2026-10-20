@@ -7,6 +7,8 @@ import {
   timestamp,
   pgEnum,
   index,
+  uniqueIndex,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { createId } from "@paralleldrive/cuid2";
 
@@ -40,25 +42,41 @@ export const thumbnailStatusEnum = pgEnum("thumbnail_status_enum", [
 ]);
 
 // Publishers — humans or AI agents that publish resources
-export const publishers = pgTable("publishers", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => createId()),
-  name: text("name").notNull(),
-  email: text("email").notNull().unique(),
-  walletAddress: text("wallet_address").notNull(),
-  apiKeyHash: text("api_key_hash").notNull(),
-  // Per-publisher rate limit in requests per minute. Null means the global
-  // default applies.
-  rateLimitRpm: integer("rate_limit_rpm"),
-  // Webhook delivery configuration. Nullable so publishers can opt in later.
-  webhookUrl: text("webhook_url"),
-  webhookSecret: text("webhook_secret"),
-  // Subscribed WebhookEvent values; null/empty means all events.
-  webhookEvents: text("webhook_events").array(),
-  webhookEnabled: boolean("webhook_enabled").notNull().default(false),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const publishers = pgTable(
+  "publishers",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => createId()),
+    name: text("name").notNull(),
+    email: text("email").notNull().unique(),
+    walletAddress: text("wallet_address").notNull(),
+    apiKeyHash: text("api_key_hash").notNull(),
+    // Per-publisher rate limit in requests per minute. Null means the global
+    // default applies.
+    rateLimitRpm: integer("rate_limit_rpm"),
+    // Webhook delivery configuration. Nullable so publishers can opt in later.
+    webhookUrl: text("webhook_url"),
+    webhookSecret: text("webhook_secret"),
+    // Subscribed WebhookEvent values; null/empty means all events.
+    webhookEvents: text("webhook_events").array(),
+    webhookEnabled: boolean("webhook_enabled").notNull().default(false),
+    // Per-publisher HMAC signing secret (shown once on creation/rotation, stored
+    // encrypted). Used by requestSignatureAuth (#42) instead of the raw API key
+    // so possession of the key alone is insufficient to forge a valid signature.
+    signingSecret: text("signing_secret"),
+    // Set when the publisher rotates their API key. Any key whose hash matches
+    // a row with a non-null api_key_revoked_at is rejected by apiKeyAuth (#40).
+    apiKeyRevokedAt: timestamp("api_key_revoked_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Every authenticated request looks up a publisher by api_key_hash.
+    // The unique index makes that lookup O(log n) instead of a sequential
+    // scan, and also enforces hash uniqueness at the DB level (#41).
+    apiKeyHashIdx: uniqueIndex("idx_publishers_api_key_hash").on(table.apiKeyHash),
+  }),
+);
 
 // Resources — digital assets published on the marketplace
 export const resources = pgTable(
@@ -237,6 +255,23 @@ export const ledgerCheckpoints = pgTable("ledger_checkpoints", {
 // Written whenever an admin delists a resource so the action is reviewable later.
 export const moderationEvents = pgTable(
   "moderation_events",
+// Idempotency records shared across replicas (#71).
+export const idempotencyRecords = pgTable("idempotency_records", {
+  key: text("key").primaryKey(),
+  record: jsonb("record").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
+// Webhook outbox — persists pending deliveries so they survive restarts (#48).
+// A background worker picks them up and retries with exponential backoff.
+export const webhookOutboxStatusEnum = pgEnum("webhook_outbox_status", [
+  "pending",
+  "delivered",
+  "failed",
+]);
+
+export const webhookOutbox = pgTable(
+  "webhook_outbox",
   {
     id: text("id")
       .primaryKey()
@@ -256,5 +291,27 @@ export const moderationEvents = pgTable(
   (table) => ({
     // Fast lookup of all moderation events for a given resource.
     resourceIdIdx: index("idx_moderation_events_resource_id").on(table.resourceId),
+    publisherId: text("publisher_id")
+      .notNull()
+      .references(() => publishers.id),
+    event: text("event").notNull(),
+    payload: jsonb("payload").notNull(),
+    // pending → being retried, delivered → success, failed → exhausted attempts
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    lastError: text("last_error"),
+    // Stable delivery ID echoed in X-SynapsVault-Id (#45).
+    deliveryId: text("delivery_id"),
+    // Worker polls for rows where next_attempt_at <= now() and status = 'pending'.
+    nextAttemptAt: timestamp("next_attempt_at").defaultNow().notNull(),
+    deliveredAt: timestamp("delivered_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Worker polls pending rows ordered by next_attempt_at.
+    statusNextIdx: index("idx_webhook_outbox_status_next").on(table.status, table.nextAttemptAt),
+    // Publisher delivery-history endpoint queries by publisher_id + created_at.
+    publisherIdIdx: index("idx_webhook_outbox_publisher_id").on(table.publisherId, table.createdAt),
   }),
 );

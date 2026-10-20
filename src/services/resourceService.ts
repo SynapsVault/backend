@@ -5,7 +5,7 @@ import { uploadFile, deleteFile } from "../storage/supabaseStorage.js";
 import { hashFileResource, hashLinkResource } from "../utils/crypto.js";
 import { createTtlCache } from "../lib/ttlCache.js";
 import { config } from "../config.js";
-import { emitToPublisher } from "./webhookService.js";
+import { enqueueWebhookEvent } from "./webhookService.js";
 import { enqueueStorageCleanup, enqueueThumbnailJob } from "./workerQueue.js";
 
 // Short-lived cache for catalog/preview reads (issue #115). These endpoints are
@@ -466,7 +466,7 @@ export async function delistResource(
 
   invalidateReads(resource.id);
 
-  emitToPublisher(resource.publisherId, "resource.delisted", {
+  void enqueueWebhookEvent(resource.publisherId, "resource.delisted", {
     resourceId: resource.id,
     title: resource.title,
   });

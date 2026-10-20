@@ -2,34 +2,36 @@ import { Router, type Router as RouterType } from "express";
 import type { z } from "zod/v4";
 import { AppError } from "../lib/errors.js";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
-import { publisherRateLimit } from "../middleware/rateLimiters.js";
+import { publisherRateLimit, registerIpRateLimit } from "../middleware/rateLimiters.js";
 import { validate } from "../middleware/validate.js";
 import {
   publisherRegisterSchema,
   updateRateLimitSchema,
   updateWebhookConfigSchema,
 } from "../schemas/requests.js";
-import { registerPublisher, getPublisherResources } from "../services/publisherService.js";
+import { registerPublisher, getPublisherResources, rotateApiKey, rotateSigningSecret } from "../services/publisherService.js";
 import { deliver, webhookUrlProblem } from "../services/webhookService.js";
 import { eq, inArray, sum, count, sql, desc } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { publishers, resources, payments } from "../db/schema.js";
+import { publishers, resources, payments, webhookOutbox } from "../db/schema.js";
 import { config } from "../config.js";
+import { encryptWebhookSecret, decryptWebhookSecret } from "../utils/crypto.js";
 
 const router: RouterType = Router();
 
 type UpdateWebhookConfig = z.infer<typeof updateWebhookConfigSchema>;
 
 // POST /publishers — register a new publisher (public)
-router.post("/publishers", validate(publisherRegisterSchema), async (req, res) => {
+router.post("/publishers", registerIpRateLimit, validate(publisherRegisterSchema), async (req, res) => {
   try {
-    const { publisher, apiKey } = await registerPublisher(req.body);
+    const { publisher, apiKey, signingSecret } = await registerPublisher(req.body);
     res.status(201).json({
       id: publisher.id,
       name: publisher.name,
       email: publisher.email,
       walletAddress: publisher.walletAddress,
-      apiKey, // shown once — store it securely
+      apiKey,          // shown once — store it securely
+      signingSecret,   // shown once — use this as the HMAC secret for request signatures (#42)
       createdAt: publisher.createdAt,
     });
   } catch (err: any) {
@@ -78,6 +80,27 @@ router.get("/publishers/me", apiKeyAuth, async (req, res) => {
 router.get("/publishers/me/resources", apiKeyAuth, async (req, res) => {
   const resources = await getPublisherResources(req.publisher!.id);
   res.json(resources);
+});
+
+// POST /publishers/me/api-keys/rotate — issue a new key, invalidate the old one (#40)
+// The new key is returned once in plaintext; the old key is immediately invalid.
+router.post("/publishers/me/api-keys/rotate", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const newApiKey = await rotateApiKey(req.publisher!.id);
+  res.json({
+    apiKey: newApiKey, // shown once — store it securely
+    rotatedAt: new Date().toISOString(),
+  });
+});
+
+// POST /publishers/me/signing-secret/rotate — issue a new HMAC signing secret (#42)
+// The new secret is returned once in plaintext; all existing request signatures
+// signed with the old secret are immediately invalid.
+router.post("/publishers/me/signing-secret/rotate", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const newSigningSecret = await rotateSigningSecret(req.publisher!.id);
+  res.json({
+    signingSecret: newSigningSecret, // shown once — store it securely, use as HMAC secret
+    rotatedAt: new Date().toISOString(),
+  });
 });
 
 // GET /publishers/me/analytics — earnings and stats (authenticated)
@@ -246,7 +269,15 @@ router.patch(
       .update(publishers)
       .set({
         ...(body.webhookUrl !== undefined ? { webhookUrl: body.webhookUrl } : {}),
-        ...(body.webhookSecret !== undefined ? { webhookSecret: body.webhookSecret } : {}),
+        ...(body.webhookSecret !== undefined
+          ? {
+              webhookSecret: body.webhookSecret === null
+                ? null
+                : config.WEBHOOK_ENCRYPTION_KEY
+                  ? encryptWebhookSecret(body.webhookSecret, config.WEBHOOK_ENCRYPTION_KEY)
+                  : body.webhookSecret,
+            }
+          : {}),
         ...(body.webhookEvents !== undefined ? { webhookEvents: body.webhookEvents } : {}),
         // Clearing the URL always disables delivery.
         ...(body.webhookUrl === null
@@ -270,9 +301,17 @@ router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, asyn
     throw new AppError("VALIDATION_ERROR", "No webhook URL configured");
   }
 
+  // Decrypt the stored secret before using it for HMAC signing (#47).
+  let secret: string | undefined;
+  if (pub.webhookSecret) {
+    secret = config.WEBHOOK_ENCRYPTION_KEY
+      ? (decryptWebhookSecret(pub.webhookSecret, config.WEBHOOK_ENCRYPTION_KEY) ?? pub.webhookSecret)
+      : pub.webhookSecret;
+  }
+
   // Single attempt: the caller is waiting on this request.
   const result = await deliver(
-    { url: pub.webhookUrl, secret: pub.webhookSecret ?? undefined },
+    { url: pub.webhookUrl, secret },
     {
       event: "webhook.test",
       timestamp: new Date().toISOString(),
@@ -282,6 +321,34 @@ router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, asyn
   );
 
   res.status(result.delivered ? 200 : 502).json(result);
+});
+
+// GET /publishers/me/webhooks/deliveries — recent outbox deliveries (#48)
+// Publishers can list recent webhook deliveries (up to 100) to inspect status,
+// errors, and retry counts.
+router.get("/publishers/me/webhooks/deliveries", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+  const limit = Math.min(Math.max(Math.trunc(Number(req.query.limit)) || 20, 1), 100);
+
+  const rows = await db
+    .select({
+      id: webhookOutbox.id,
+      event: webhookOutbox.event,
+      status: webhookOutbox.status,
+      attempts: webhookOutbox.attempts,
+      maxAttempts: webhookOutbox.maxAttempts,
+      lastError: webhookOutbox.lastError,
+      deliveryId: webhookOutbox.deliveryId,
+      nextAttemptAt: webhookOutbox.nextAttemptAt,
+      deliveredAt: webhookOutbox.deliveredAt,
+      createdAt: webhookOutbox.createdAt,
+    })
+    .from(webhookOutbox)
+    .where(eq(webhookOutbox.publisherId, pub.id))
+    .orderBy(desc(webhookOutbox.createdAt))
+    .limit(limit);
+
+  res.json({ deliveries: rows });
 });
 
 // GET /publishers/leaderboard — public creator leaderboard

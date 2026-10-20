@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { rootLogger } from "../logger.js";
 import type { RateLimitConsumeResult, RateLimitStore } from "./types.js";
 
 function buildBlockedResult(
@@ -108,17 +109,69 @@ export class MemorySlidingWindowStore implements RateLimitStore {
  */
 export class RedisSlidingWindowStore implements RateLimitStore {
   private client: import("redis").RedisClientType | null = null;
-  private readonly connectPromise: Promise<void>;
+  private connectPromise: Promise<void>;
+  private fallbackLogged = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private closed = false;
 
   constructor(private readonly redisUrl: string) {
-    this.connectPromise = this.init();
+    this.connectPromise = this.connectSafely();
+  }
+
+  /** Connect without ever rejecting; log the failure once and retry with backoff. */
+  private async connectSafely(): Promise<void> {
+    try {
+      await this.init();
+      this.reconnectAttempt = 0;
+      this.fallbackLogged = false;
+    } catch (err) {
+      if (!this.fallbackLogged) {
+        this.fallbackLogged = true;
+        rootLogger.warn(
+          { event: "rate_limit_redis_unavailable", err },
+          "Redis rate-limit store unavailable; requests will be rejected by the store until it reconnects",
+        );
+      }
+      try {
+        await this.client?.disconnect();
+      } catch {
+        // ignore
+      }
+      this.client = null;
+      this.scheduleReconnect();
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    const delay = Math.min(30_000, 500 * 2 ** this.reconnectAttempt++);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectPromise = this.connectSafely();
+    }, delay);
+    this.reconnectTimer.unref();
   }
 
   private async init(): Promise<void> {
     const { createClient } = await import("redis");
-    this.client = createClient({ url: this.redisUrl });
+    this.client = createClient({
+      url: this.redisUrl,
+      socket: {
+        connectTimeout: 5_000,
+        // Give up quickly so connect() rejects and our backoff loop takes over.
+        reconnectStrategy: (retries: number) =>
+          retries >= 2 ? new Error("Redis unreachable") : 200 * (retries + 1),
+      },
+    });
     this.client.on("error", () => {
       // Connection errors are handled per consume call; avoid crashing the process.
+    });
+    this.client.on("end", () => {
+      if (!this.closed && this.client) {
+        this.client = null;
+        this.scheduleReconnect();
+      }
     });
     await this.client.connect();
   }
@@ -171,6 +224,8 @@ export class RedisSlidingWindowStore implements RateLimitStore {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     await this.connectPromise;
     if (this.client?.isOpen) {
       await this.client.quit();

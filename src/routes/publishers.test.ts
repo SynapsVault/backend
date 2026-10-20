@@ -25,6 +25,7 @@ const authedPublisher = {
   email: "alice@example.com",
   walletAddress: "GALICE",
   apiKeyHash: VALID_API_KEY_HASH,
+  apiKeyRevokedAt: null,
   createdAt: new Date("2026-01-01"),
 };
 
@@ -95,13 +96,16 @@ describe("POST /publishers — registration (#294)", () => {
     mockRegisterPublisher.mockReset();
   });
 
+  // A real Stellar ed25519 public key (G..., 56 chars) so the schema passes.
+  const VALID_WALLET = "GDEJJLXV2CNHF5HEGX34MU4G6L4PRVUAGD4ANF77ZDYTQJKSDSDYVVI6";
+
   it("registers a publisher and returns the one-time API key", async () => {
     mockRegisterPublisher.mockResolvedValue({
       publisher: {
         id: "pub-1",
         name: "Alice",
         email: "alice@example.com",
-        walletAddress: "GALICE",
+        walletAddress: VALID_WALLET,
         createdAt: new Date("2026-01-01"),
       },
       apiKey: "mv_freshkey",
@@ -110,7 +114,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(201);
@@ -118,13 +122,13 @@ describe("POST /publishers — registration (#294)", () => {
       id: "pub-1",
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
       apiKey: "mv_freshkey",
     });
     expect(mockRegisterPublisher).toHaveBeenCalledWith({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
   });
 
@@ -132,7 +136,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "not-an-email",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(400);
@@ -142,7 +146,7 @@ describe("POST /publishers — registration (#294)", () => {
   it("returns 400 when a required field is missing", async () => {
     const res = await request(createTestApp()).post("/publishers").send({
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(400);
@@ -153,7 +157,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
       isAdmin: true,
     });
 
@@ -169,7 +173,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(409);
@@ -186,7 +190,7 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(409);
@@ -199,10 +203,55 @@ describe("POST /publishers — registration (#294)", () => {
     const res = await request(createTestApp()).post("/publishers").send({
       name: "Alice",
       email: "alice@example.com",
-      walletAddress: "GALICE",
+      walletAddress: VALID_WALLET,
     });
 
     expect(res.status).toBe(500);
+  });
+
+  // ── Email normalisation (#39) ──────────────────────────────────────────────
+
+  it("normalises a mixed-case email before passing it to registerPublisher (#39)", async () => {
+    mockRegisterPublisher.mockResolvedValue({
+      publisher: {
+        id: "pub-2",
+        name: "Ada",
+        email: "ada@x.com",
+        walletAddress: VALID_WALLET,
+        createdAt: new Date("2026-01-01"),
+      },
+      apiKey: "mv_freshkey2",
+    });
+
+    const res = await request(createTestApp()).post("/publishers").send({
+      name: "Ada",
+      email: "Ada@X.Com",
+      walletAddress: VALID_WALLET,
+    });
+
+    expect(res.status).toBe(201);
+    // The service must receive the normalised (lowercased, trimmed) email.
+    expect(mockRegisterPublisher).toHaveBeenCalledWith(
+      expect.objectContaining({ email: "ada@x.com" }),
+    );
+  });
+
+  it("returns 409 when a differently-cased email already exists (#39)", async () => {
+    mockRegisterPublisher.mockRejectedValue(
+      Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+      }),
+    );
+
+    const res = await request(createTestApp()).post("/publishers").send({
+      name: "Ada",
+      // Email is normalised to ada@x.com, which is already taken.
+      email: "ADA@X.COM",
+      walletAddress: VALID_WALLET,
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("CONFLICT");
   });
 });
 

@@ -226,6 +226,8 @@ const envSchema = z.object({
   VERIFICATION_COMPLETION_COST_PER_1M: z.coerce.number().nonnegative().default(15),
 
   // Rate limiting (verify-content + publish)
+  RATE_LIMIT_REGISTER_IP_MAX: z.coerce.number().default(10),
+  RATE_LIMIT_REGISTER_IP_WINDOW_MS: z.coerce.number().default(3_600_000),
   RATE_LIMIT_VERIFY_IP_MAX: z.coerce.number().default(10),
   RATE_LIMIT_VERIFY_IP_WINDOW_MS: z.coerce.number().default(60_000),
   RATE_LIMIT_VERIFY_WALLET_MAX: z.coerce.number().default(5),
@@ -260,8 +262,25 @@ const envSchema = z.object({
   // Advisory lock key used to elect the single worker leader across replicas.
   WORKER_LEADER_LOCK_ID: z.coerce.number().int().default(4_021_001),
 
-  // Optional HMAC-SHA256 request signatures for publisher mutations (off by default).
-  REQUIRE_REQUEST_SIGNATURE: envFlag(false),
+  // AES-256 key used to encrypt per-publisher signing secrets at rest (#42).
+  // Required when REQUIRE_REQUEST_SIGNATURE is true.
+  SIGNING_SECRET_KEY: z.string().min(16).optional(),
+
+  // AES-256 key used to encrypt webhook secrets at rest (#47).
+  // Optional — when unset webhook secrets are NOT encrypted (logged as warning).
+  WEBHOOK_ENCRYPTION_KEY: z.string().min(16).optional(),
+
+  // Admin panel protection key (#49). Optional — when unset admin routes are
+  // disabled (return 401) and a warning is logged at boot.
+  ADMIN_API_KEY: z.string().min(1).optional(),
+
+  // HMAC-SHA256 request signatures for publisher mutations.
+  // Defaults to true in production; false elsewhere. Override with env var.
+  REQUIRE_REQUEST_SIGNATURE: envFlag(
+    typeof process !== "undefined" && (process.env.NODE_ENV ?? "development") === "production"
+      ? true
+      : false
+  ),
   // Legacy register flow where the server signs with the platform registry key
   // on the creator's behalf (#80). Off by default; clients must send signedXdr.
   ALLOW_LEGACY_REGISTER: envFlag(false),
@@ -289,6 +308,18 @@ const envSchema = z.object({
   DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(10_000),
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 });
+
+// In production the localhost defaults would leak into accessUrl values and the
+// CORS allowlist, so both URLs must be set explicitly.
+if (envWithDefaults.NODE_ENV === "production") {
+  const missing = (["BASE_URL", "WEB_APP_URL"] as const).filter((k) => !envWithDefaults[k]?.trim());
+  if (missing.length > 0) {
+    for (const key of missing) {
+      console.error(`[config] ${key}: required when NODE_ENV=production (no localhost default is applied)`);
+    }
+    process.exit(1);
+  }
+}
 
 const parsed = envSchema.safeParse(envWithDefaults);
 
@@ -323,3 +354,58 @@ if (networkIssues.length > 0) {
 }
 
 export const config = parsed.data;
+
+// ── Boot-time security warnings (#44) ────────────────────────────────────────
+if (parsed.data.NODE_ENV === "production" && !parsed.data.REQUIRE_REQUEST_SIGNATURE) {
+  rootLogger.warn(
+    { event: "config_signature_disabled" },
+    "[security] REQUIRE_REQUEST_SIGNATURE is off in production — publisher mutation " +
+    "endpoints accept a bare API key without a signed request. Set " +
+    "REQUIRE_REQUEST_SIGNATURE=true and SIGNING_SECRET_KEY to enforce HMAC-signed " +
+    "requests (#44).",
+  );
+  console.warn(
+    "[config] WARNING: REQUIRE_REQUEST_SIGNATURE=false in production. " +
+    "Publisher mutations are not protected by HMAC signatures. " +
+    "Set REQUIRE_REQUEST_SIGNATURE=true and SIGNING_SECRET_KEY to fix this (#44).",
+  );
+}
+
+if (parsed.data.REQUIRE_REQUEST_SIGNATURE && !parsed.data.SIGNING_SECRET_KEY) {
+  rootLogger.error(
+    { event: "config_signing_key_missing" },
+    "SIGNING_SECRET_KEY is required when REQUIRE_REQUEST_SIGNATURE=true (#42).",
+  );
+  console.error(
+    "[config] SIGNING_SECRET_KEY: required when REQUIRE_REQUEST_SIGNATURE=true (#42)",
+  );
+  process.exit(1);
+}
+
+// ── Boot-time security warnings (#49) ────────────────────────────────────────
+if (!parsed.data.ADMIN_API_KEY) {
+  rootLogger.warn(
+    { event: "config_admin_key_missing" },
+    "[security] ADMIN_API_KEY is not set — admin routes (/admin/stats, /admin/audit, " +
+    "/admin/delist) are disabled and will return 401. Set ADMIN_API_KEY to a strong " +
+    "random secret to enable them (#49).",
+  );
+  console.warn(
+    "[config] WARNING: ADMIN_API_KEY is not set. Admin routes are disabled. " +
+    "Set ADMIN_API_KEY to enable them (#49).",
+  );
+}
+
+// ── Boot-time security warnings (#47) ────────────────────────────────────────
+if (!parsed.data.WEBHOOK_ENCRYPTION_KEY) {
+  rootLogger.warn(
+    { event: "config_webhook_encryption_key_missing" },
+    "[security] WEBHOOK_ENCRYPTION_KEY is not set — webhook secrets will be stored " +
+    "as plain text in the database. Set WEBHOOK_ENCRYPTION_KEY to a strong random " +
+    "secret to encrypt them at rest (#47).",
+  );
+  console.warn(
+    "[config] WARNING: WEBHOOK_ENCRYPTION_KEY is not set. " +
+    "Webhook secrets are stored in plain text. Set WEBHOOK_ENCRYPTION_KEY to fix this (#47).",
+  );
+}

@@ -14,6 +14,16 @@ last-processed-ledger.json
 test-results/
 
 # Editor / OS
+# Test snapshots, vitest cache, and coverage artefacts
+**/__snapshots__/
+.vitest-cache/
+vitest.d.ts
+*.snap
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Editor / IDE
 .vscode/
 .idea/
 *.swp
@@ -23,3 +33,13 @@ Thumbs.db
 # Build artefacts
 *.tsbuildinfo
 
+
+# OS artefacts
+Thumbs.db
+
+# Temp / debug files
+*.tmp
+*.bak
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

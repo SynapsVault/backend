@@ -1,6 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import request from "supertest";
+
+// This mock is hoisted before any import, so docs.ts sees NODE_ENV="test"
+// (non-production) and registers the /docs route.
+vi.mock("../config.js", () => ({
+  config: { NODE_ENV: "test" },
+}));
+
 import docsRouter from "./docs.js";
 import { openApiSpec } from "../openapi.js";
 
@@ -47,6 +54,36 @@ describe("docs routes", () => {
     expect(res.text).toContain("/openapi.json");
   });
 
+  // ── Acceptance criterion: SRI integrity attributes (#54) ──────────────────
+
+  it("GET /docs HTML contains an integrity attribute for the CSS asset (#54)", async () => {
+    const res = await request(app).get("/docs");
+    expect(res.status).toBe(200);
+    expect(res.text).toMatch(/rel="stylesheet"[^>]*integrity="sha384-/);
+  });
+
+  it("GET /docs HTML contains an integrity attribute for the JS asset (#54)", async () => {
+    const res = await request(app).get("/docs");
+    expect(res.status).toBe(200);
+    expect(res.text).toMatch(/<script[^>]+integrity="sha384-/);
+  });
+
+  it("GET /docs HTML carries crossorigin='anonymous' on both assets (#54)", async () => {
+    const res = await request(app).get("/docs");
+    expect(res.status).toBe(200);
+    const matches = res.text.match(/crossorigin="anonymous"/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("GET /docs HTML uses an exact pinned version, not a floating range (#54)", async () => {
+    const res = await request(app).get("/docs");
+    expect(res.status).toBe(200);
+    // Must not have a bare major version like @5/ or @5"
+    expect(res.text).not.toMatch(/swagger-ui-dist@\d+[/"]/);
+    // Must have a full semver like @5.34.0
+    expect(res.text).toMatch(/swagger-ui-dist@\d+\.\d+\.\d+/);
+  });
+
   it("every $ref resolves to a defined component", () => {
     const spec = openApiSpec as unknown as { components: Record<string, Record<string, unknown>> };
     const missing = collectRefs(openApiSpec).filter((ref) => {
@@ -58,7 +95,9 @@ describe("docs routes", () => {
 
   it("documents every operation with a unique operationId", () => {
     const ids: string[] = [];
-    for (const methods of Object.values(openApiSpec.paths as Record<string, Record<string, { operationId?: string }>>)) {
+    for (const methods of Object.values(
+      openApiSpec.paths as Record<string, Record<string, { operationId?: string }>>,
+    )) {
       for (const op of Object.values(methods)) {
         expect(op.operationId, JSON.stringify(op).slice(0, 80)).toBeTypeOf("string");
         ids.push(op.operationId!);

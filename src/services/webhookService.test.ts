@@ -12,17 +12,26 @@ vi.mock("../config.js", () => ({
 
 vi.mock("../lib/logger.js", () => ({ getLogger: () => logger }));
 
-vi.mock("../db/schema.js", () => ({ publishers: {} }));
+vi.mock("../db/schema.js", () => ({ publishers: {}, webhookOutbox: {} }));
 
 vi.mock("../db/client.js", () => ({
   db: {
     select: () => ({
       from: () => ({ where: () => ({ limit: () => Promise.resolve(mockRows.value) }) }),
     }),
+    insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "out-1" }]) }) }),
   },
 }));
 
-import { deliver, emitToPublisher, signPayload, webhookUrlProblem, SIGNATURE_HEADER } from "./webhookService.js";
+// Mock DNS so deliver() doesn't block on real network lookups in tests.
+// Returns a non-private public IP for any hostname.
+vi.mock("node:dns", () => ({
+  promises: {
+    lookup: vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]),
+  },
+}));
+
+import { deliver, emitToPublisher, signPayload, webhookUrlProblem, isPrivateIp, resolveHostname, SIGNATURE_HEADER, DELIVERY_ID_HEADER } from "./webhookService.js";
 
 function publisherRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -93,14 +102,23 @@ describe("webhookService", () => {
   });
 
   describe("signing", () => {
-    it("signs the exact request body with HMAC-SHA256", async () => {
+    it("signs ${timestamp}.${body} with HMAC-SHA256 so the timestamp is covered (#45)", async () => {
       fetchMock.mockResolvedValue(ok());
       await emitToPublisher("pub-1", "resource.purchased", { id: "r1" });
 
       const [, init] = fetchMock.mock.calls[0];
-      const expected = createHmac("sha256", "super-secret-value-123").update(init.body).digest("hex");
+      const ts = init.headers["X-SynapsVault-Timestamp"] as string;
+      // #45: the HMAC input is "${timestamp}.${body}", not just the body.
+      const expected = createHmac("sha256", "super-secret-value-123").update(`${ts}.${init.body}`).digest("hex");
       expect(init.headers[SIGNATURE_HEADER]).toBe(expected);
-      expect(signPayload(init.body, "super-secret-value-123")).toBe(expected);
+      expect(signPayload(init.body, "super-secret-value-123", ts)).toBe(expected);
+    });
+
+    it("signature changes when the timestamp changes (#45)", async () => {
+      const body = JSON.stringify({ event: "resource.purchased", timestamp: "t1", data: {} });
+      const sig1 = signPayload(body, "secret", "ts-1");
+      const sig2 = signPayload(body, "secret", "ts-2");
+      expect(sig1).not.toBe(sig2);
     });
 
     it("sends the event type and payload", async () => {
@@ -111,6 +129,14 @@ describe("webhookService", () => {
       const body = JSON.parse(init.body);
       expect(body).toMatchObject({ event: "resource.purchased", data: { id: "r1" } });
       expect(init.headers["X-SynapsVault-Event"]).toBe("resource.purchased");
+    });
+
+    it("includes a stable X-SynapsVault-Id delivery header (#45)", async () => {
+      fetchMock.mockResolvedValue(ok());
+      await emitToPublisher("pub-1", "resource.purchased", { id: "r1" });
+
+      const [, init] = fetchMock.mock.calls[0];
+      expect(init.headers[DELIVERY_ID_HEADER]).toMatch(/^wh_[0-9a-f]{32}$/);
     });
 
     it("omits the signature when no secret is configured", async () => {
@@ -190,6 +216,82 @@ describe("webhookService", () => {
       "not a url",
     ])("rejects %s", (url) => {
       expect(webhookUrlProblem(url)).not.toBeNull();
+    });
+  });
+
+  describe("SSRF guard — DNS resolution at delivery time (#46)", () => {
+    it("blocks a hostname that resolves to a private IP (10.x)", async () => {
+      const { promises: dnsMock } = await import("node:dns");
+      (dnsMock.lookup as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { address: "10.0.0.1", family: 4 },
+      ]);
+      fetchMock.mockResolvedValue({ ok: true, status: 200 });
+
+      const result = await deliver(
+        { url: "https://evil.example.com/hook" },
+        { event: "resource.purchased", timestamp: "t", data: {} },
+      );
+
+      expect(result.delivered).toBe(false);
+      expect(result.error).toMatch(/SSRF guard/i);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks the AWS metadata endpoint (169.254.169.254)", async () => {
+      const { promises: dnsMock } = await import("node:dns");
+      (dnsMock.lookup as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        { address: "169.254.169.254", family: 4 },
+      ]);
+      fetchMock.mockResolvedValue({ ok: true, status: 200 });
+
+      const result = await deliver(
+        { url: "https://metadata.example.com/hook" },
+        { event: "resource.purchased", timestamp: "t", data: {} },
+      );
+
+      expect(result.delivered).toBe(false);
+      expect(result.error).toMatch(/SSRF guard/i);
+    });
+
+    it("DNS rebinding: re-resolves on each attempt and blocks mid-flight", async () => {
+      const { promises: dnsMock } = await import("node:dns");
+      // First attempt: resolves to a public IP → fetch fails.
+      // Second attempt: resolves to a private IP → blocked (DNS rebinding).
+      (dnsMock.lookup as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+        .mockResolvedValueOnce([{ address: "192.168.1.1", family: 4 }]);
+
+      vi.useFakeTimers();
+      fetchMock.mockRejectedValueOnce(new Error("connection refused"));
+
+      const promise = deliver(
+        { url: "https://rebind.example.com/hook" },
+        { event: "resource.purchased", timestamp: "t", data: {} },
+        { maxAttempts: 3 },
+      );
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      // First attempt used public IP (fetch threw) → retry
+      // Second attempt resolved to private IP → SSRF blocked
+      expect(result.delivered).toBe(false);
+      expect(result.error).toMatch(/SSRF guard/i);
+    });
+
+    it("isPrivateIp correctly identifies private ranges", () => {
+      expect(isPrivateIp("10.0.0.1")).toBe(true);
+      expect(isPrivateIp("192.168.1.1")).toBe(true);
+      expect(isPrivateIp("172.16.0.1")).toBe(true);
+      expect(isPrivateIp("169.254.169.254")).toBe(true);
+      expect(isPrivateIp("127.0.0.1")).toBe(true);
+      expect(isPrivateIp("::1")).toBe(true);
+      expect(isPrivateIp("fc00::1")).toBe(true);
+      expect(isPrivateIp("fe80::1")).toBe(true);
+      expect(isPrivateIp("::ffff:10.0.0.1")).toBe(true); // IPv6-mapped private
+
+      expect(isPrivateIp("8.8.8.8")).toBe(false);
+      expect(isPrivateIp("93.184.216.34")).toBe(false);
+      expect(isPrivateIp("2001:4860:4860::8888")).toBe(false);
     });
   });
 });

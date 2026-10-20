@@ -54,7 +54,8 @@ export function createApp(): Express {
   app.use(metricsRouter);
   app.use(adminRouter);
 
-  // OpenAPI spec + Swagger UI (all envs; UI is CDN-based, no extra package needed)
+  // OpenAPI spec (/openapi.json, /docs/json) — all envs.
+  // Swagger UI (/docs) — non-production only (#54); gate is inside docsRouter.
   app.use(docsRouter);
 
   // 404 handler (after all routes)
