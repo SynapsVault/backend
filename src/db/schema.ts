@@ -257,3 +257,42 @@ export const idempotencyRecords = pgTable("idempotency_records", {
   record: jsonb("record").notNull(),
   expiresAt: timestamp("expires_at").notNull(),
 });
+
+// Webhook outbox — persists pending deliveries so they survive restarts (#48).
+// A background worker picks them up and retries with exponential backoff.
+export const webhookOutboxStatusEnum = pgEnum("webhook_outbox_status", [
+  "pending",
+  "delivered",
+  "failed",
+]);
+
+export const webhookOutbox = pgTable(
+  "webhook_outbox",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => createId()),
+    publisherId: text("publisher_id")
+      .notNull()
+      .references(() => publishers.id),
+    event: text("event").notNull(),
+    payload: jsonb("payload").notNull(),
+    // pending → being retried, delivered → success, failed → exhausted attempts
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    lastError: text("last_error"),
+    // Stable delivery ID echoed in X-SynapsVault-Id (#45).
+    deliveryId: text("delivery_id"),
+    // Worker polls for rows where next_attempt_at <= now() and status = 'pending'.
+    nextAttemptAt: timestamp("next_attempt_at").defaultNow().notNull(),
+    deliveredAt: timestamp("delivered_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Worker polls pending rows ordered by next_attempt_at.
+    statusNextIdx: index("idx_webhook_outbox_status_next").on(table.status, table.nextAttemptAt),
+    // Publisher delivery-history endpoint queries by publisher_id + created_at.
+    publisherIdIdx: index("idx_webhook_outbox_publisher_id").on(table.publisherId, table.createdAt),
+  }),
+);

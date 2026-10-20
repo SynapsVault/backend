@@ -34,7 +34,7 @@ vi.mock("../services/verificationService.js", () => ({
   checkOriginality: h.checkOriginality,
 }));
 
-vi.mock("../services/webhookService.js", () => ({ emitToPublisher: vi.fn() }));
+vi.mock("../services/webhookService.js", () => ({ emitToPublisher: vi.fn(), enqueueWebhookEvent: vi.fn() }));
 
 vi.mock("../db/client.js", () => {
   // A select() chain that supports both the resource lookup (where -> limit)

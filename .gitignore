@@ -7,10 +7,11 @@ dist/
 coverage/
 last-processed-ledger.json
 
-# Test snapshots and vitest cache
+# Test snapshots, vitest cache, and coverage artefacts
 **/__snapshots__/
 .vitest-cache/
 vitest.d.ts
+*.snap
 
 # TypeScript build info
 *.tsbuildinfo
@@ -23,3 +24,10 @@ vitest.d.ts
 
 # OS artefacts
 Thumbs.db
+
+# Temp / debug files
+*.tmp
+*.bak
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

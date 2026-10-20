@@ -13,6 +13,7 @@ import { pgClient } from "./db/client.js";
 import { startPoolMetrics, stopPoolMetrics } from "./db/client.js";
 import { startRetryPendingWorker, stopRetryPendingWorker } from "./workers/retryPendingWorker.js";
 import { startEventListener, stopEventListener } from "./workers/eventListener.js";
+import { startWebhookOutboxWorker, stopWebhookOutboxWorker } from "./workers/webhookOutboxWorker.js";
 import { closeRateLimitStore } from "./lib/rateLimit/index.js";
 import { useSharedIdempotencyStore } from "./lib/idempotency.js";
 import {
@@ -110,6 +111,7 @@ async function startWorkersIfLeader(): Promise<void> {
   rootLogger.info({ event: "workers_started_as_leader" }, "acquired worker leader lock; starting background workers");
   startRetryPendingWorker();
   startEventListener();
+  startWebhookOutboxWorker();
 }
 
 const server: Server = app.listen(config.PORT, () => {
@@ -136,6 +138,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (workersStarted) {
     stopRetryPendingWorker();
     stopEventListener();
+    stopWebhookOutboxWorker();
   }
   stopPoolMetrics();
 

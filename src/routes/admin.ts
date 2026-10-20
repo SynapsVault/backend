@@ -11,6 +11,7 @@ import { desc, count, and, eq, gte, lte, type SQL } from "drizzle-orm";
 import { getLogger } from "../lib/logger.js";
 import { AppError } from "../lib/errors.js";
 import { adminDelistResource } from "../services/resourceService.js";
+import { config } from "../config.js";
 
 const router = Router();
 
@@ -20,7 +21,7 @@ function digest(value: string): Buffer {
 
 /** Constant-time check of X-Admin-Key against ADMIN_API_KEY (disabled when unset). */
 function adminAuth(req: Request, _res: Response, next: NextFunction) {
-  const expected = process.env.ADMIN_API_KEY;
+  const expected = config.ADMIN_API_KEY;
   const key = req.headers["x-admin-key"];
   if (!expected || typeof key !== "string" || !timingSafeEqual(digest(key), digest(expected))) {
     throw new AppError("UNAUTHORIZED", "Unauthorized");
