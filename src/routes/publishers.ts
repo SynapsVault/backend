@@ -13,8 +13,9 @@ import { registerPublisher, getPublisherResources, rotateApiKey, rotateSigningSe
 import { deliver, webhookUrlProblem } from "../services/webhookService.js";
 import { eq, inArray, sum, count, sql, desc } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { publishers, resources, payments } from "../db/schema.js";
+import { publishers, resources, payments, webhookOutbox } from "../db/schema.js";
 import { config } from "../config.js";
+import { encryptWebhookSecret, decryptWebhookSecret } from "../utils/crypto.js";
 
 const router: RouterType = Router();
 
@@ -268,7 +269,15 @@ router.patch(
       .update(publishers)
       .set({
         ...(body.webhookUrl !== undefined ? { webhookUrl: body.webhookUrl } : {}),
-        ...(body.webhookSecret !== undefined ? { webhookSecret: body.webhookSecret } : {}),
+        ...(body.webhookSecret !== undefined
+          ? {
+              webhookSecret: body.webhookSecret === null
+                ? null
+                : config.WEBHOOK_ENCRYPTION_KEY
+                  ? encryptWebhookSecret(body.webhookSecret, config.WEBHOOK_ENCRYPTION_KEY)
+                  : body.webhookSecret,
+            }
+          : {}),
         ...(body.webhookEvents !== undefined ? { webhookEvents: body.webhookEvents } : {}),
         // Clearing the URL always disables delivery.
         ...(body.webhookUrl === null
@@ -292,9 +301,17 @@ router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, asyn
     throw new AppError("VALIDATION_ERROR", "No webhook URL configured");
   }
 
+  // Decrypt the stored secret before using it for HMAC signing (#47).
+  let secret: string | undefined;
+  if (pub.webhookSecret) {
+    secret = config.WEBHOOK_ENCRYPTION_KEY
+      ? (decryptWebhookSecret(pub.webhookSecret, config.WEBHOOK_ENCRYPTION_KEY) ?? pub.webhookSecret)
+      : pub.webhookSecret;
+  }
+
   // Single attempt: the caller is waiting on this request.
   const result = await deliver(
-    { url: pub.webhookUrl, secret: pub.webhookSecret ?? undefined },
+    { url: pub.webhookUrl, secret },
     {
       event: "webhook.test",
       timestamp: new Date().toISOString(),
@@ -304,6 +321,34 @@ router.post("/publishers/me/webhooks/test", apiKeyAuth, publisherRateLimit, asyn
   );
 
   res.status(result.delivered ? 200 : 502).json(result);
+});
+
+// GET /publishers/me/webhooks/deliveries — recent outbox deliveries (#48)
+// Publishers can list recent webhook deliveries (up to 100) to inspect status,
+// errors, and retry counts.
+router.get("/publishers/me/webhooks/deliveries", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+  const limit = Math.min(Math.max(Math.trunc(Number(req.query.limit)) || 20, 1), 100);
+
+  const rows = await db
+    .select({
+      id: webhookOutbox.id,
+      event: webhookOutbox.event,
+      status: webhookOutbox.status,
+      attempts: webhookOutbox.attempts,
+      maxAttempts: webhookOutbox.maxAttempts,
+      lastError: webhookOutbox.lastError,
+      deliveryId: webhookOutbox.deliveryId,
+      nextAttemptAt: webhookOutbox.nextAttemptAt,
+      deliveredAt: webhookOutbox.deliveredAt,
+      createdAt: webhookOutbox.createdAt,
+    })
+    .from(webhookOutbox)
+    .where(eq(webhookOutbox.publisherId, pub.id))
+    .orderBy(desc(webhookOutbox.createdAt))
+    .limit(limit);
+
+  res.json({ deliveries: rows });
 });
 
 // GET /publishers/leaderboard — public creator leaderboard

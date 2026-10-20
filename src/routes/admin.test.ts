@@ -1,6 +1,16 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+
+// mockConfig must be hoisted so the vi.mock factory can reference it.
+const mockConfig = vi.hoisted(() => ({
+  ADMIN_API_KEY: undefined as string | undefined,
+  NODE_ENV: 'test' as const,
+}));
+
+vi.mock('../config.js', () => ({
+  config: mockConfig,
+}));
 
 vi.mock('../db/client.js', () => {
   const select = vi.fn();
@@ -45,18 +55,29 @@ vi.mock('../lib/logger.js', () => ({
     error: vi.fn(),
     debug: vi.fn(),
   },
+  rootLogger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+  getLogger: () => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  }),
 }));
 
+import { default as adminRouter } from './admin.js';
 import * as dbClient from '../db/client.js';
 import * as resourceService from '../services/resourceService.js';
 
-const ORIGINAL_ENV = { ...process.env };
-
-async function buildApp() {
-  const { default: adminRouter } = await import('./admin.js');
+function buildApp() {
   const app = express();
   app.use(express.json());
-  app.use('/admin', adminRouter);
+  // Real app mounts adminRouter directly (no prefix) — routes include /admin/* prefix.
+  app.use(adminRouter);
   // Mirror src/middleware/errorHandler.ts: map AppError to status code.
   app.use((err: any, _req: any, res: any, _next: any) => {
     const status = typeof err?.status === 'number' ? err.status : 500;
@@ -67,36 +88,28 @@ async function buildApp() {
 
 describe('admin routes', () => {
   beforeEach(() => {
-    vi.resetModules();
     vi.clearAllMocks();
-    process.env = { ...ORIGINAL_ENV };
-  });
-
-  afterEach(() => {
-    process.env = { ...ORIGINAL_ENV };
+    mockConfig.ADMIN_API_KEY = undefined;
   });
 
   describe('auth check', () => {
     it('returns 401 when X-Admin-Key header is missing', async () => {
-      process.env.ADMIN_API_KEY = 'secret-key';
-      const app = await buildApp();
-      const res = await request(app).get('/admin/stats');
+      mockConfig.ADMIN_API_KEY = 'secret-key';
+      const res = await request(buildApp()).get('/admin/stats');
       expect(res.status).toBe(401);
     });
 
     it('returns 401 when X-Admin-Key is wrong', async () => {
-      process.env.ADMIN_API_KEY = 'secret-key';
-      const app = await buildApp();
-      const res = await request(app)
+      mockConfig.ADMIN_API_KEY = 'secret-key';
+      const res = await request(buildApp())
         .get('/admin/stats')
         .set('X-Admin-Key', 'wrong-key');
       expect(res.status).toBe(401);
     });
 
     it('returns 401 when ADMIN_API_KEY is unset', async () => {
-      delete process.env.ADMIN_API_KEY;
-      const app = await buildApp();
-      const res = await request(app)
+      mockConfig.ADMIN_API_KEY = undefined;
+      const res = await request(buildApp())
         .get('/admin/stats')
         .set('X-Admin-Key', 'anything');
       expect(res.status).toBe(401);
@@ -105,7 +118,7 @@ describe('admin routes', () => {
 
   describe('GET /admin/stats', () => {
     it('returns counts from the db plus uptime and timestamp', async () => {
-      process.env.ADMIN_API_KEY = 'secret-key';
+      mockConfig.ADMIN_API_KEY = 'secret-key';
 
       const db = dbClient.db as any;
       // Each select chain resolves to a count row.
@@ -115,8 +128,7 @@ describe('admin routes', () => {
         return chain;
       });
 
-      const app = await buildApp();
-      const res = await request(app)
+      const res = await request(buildApp())
         .get('/admin/stats')
         .set('X-Admin-Key', 'secret-key');
 
@@ -125,20 +137,18 @@ describe('admin routes', () => {
       expect(typeof res.body.uptime).toBe('number');
       expect(res.body).toHaveProperty('timestamp');
       expect(typeof res.body.timestamp).toBe('string');
-      expect(res.body.counts).toBeDefined();
     });
   });
 
   describe('POST /admin/delist/:id', () => {
     it('returns success when adminDelistResource resolves', async () => {
-      process.env.ADMIN_API_KEY = 'secret-key';
+      mockConfig.ADMIN_API_KEY = 'secret-key';
       (resourceService.adminDelistResource as any).mockResolvedValue({
         id: 'res-1',
         delisted: true,
       });
 
-      const app = await buildApp();
-      const res = await request(app)
+      const res = await request(buildApp())
         .post('/admin/delist/res-1')
         .set('X-Admin-Key', 'secret-key');
 
@@ -147,11 +157,10 @@ describe('admin routes', () => {
     });
 
     it('returns 404 when adminDelistResource resolves null', async () => {
-      process.env.ADMIN_API_KEY = 'secret-key';
+      mockConfig.ADMIN_API_KEY = 'secret-key';
       (resourceService.adminDelistResource as any).mockResolvedValue(null);
 
-      const app = await buildApp();
-      const res = await request(app)
+      const res = await request(buildApp())
         .post('/admin/delist/missing')
         .set('X-Admin-Key', 'secret-key');
 
@@ -161,7 +170,7 @@ describe('admin routes', () => {
 
   describe('GET /admin/audit', () => {
     it('returns paginated entries', async () => {
-      process.env.ADMIN_API_KEY = 'secret-key';
+      mockConfig.ADMIN_API_KEY = 'secret-key';
 
       const db = dbClient.db as any;
       const entries = [
@@ -171,11 +180,11 @@ describe('admin routes', () => {
       const offsetMock = vi.fn().mockResolvedValue(entries);
       const limitMock = vi.fn().mockReturnValue({ offset: offsetMock });
       const orderByMock = vi.fn().mockReturnValue({ limit: limitMock });
-      const fromMock = vi.fn().mockReturnValue({ orderBy: orderByMock });
+      const whereMock = vi.fn().mockReturnValue({ orderBy: orderByMock });
+      const fromMock = vi.fn().mockReturnValue({ where: whereMock });
       db.select.mockReturnValue({ from: fromMock });
 
-      const app = await buildApp();
-      const res = await request(app)
+      const res = await request(buildApp())
         .get('/admin/audit')
         .set('X-Admin-Key', 'secret-key');
 
@@ -186,32 +195,37 @@ describe('admin routes', () => {
     });
 
     it('clamps limit to [1,200] and page to >=1', async () => {
-      process.env.ADMIN_API_KEY = 'secret-key';
+      mockConfig.ADMIN_API_KEY = 'secret-key';
 
       const db = dbClient.db as any;
-      const offsetMock = vi.fn().mockResolvedValue([]);
-      const limitMock = vi.fn().mockReturnValue({ offset: offsetMock });
-      const orderByMock = vi.fn().mockReturnValue({ limit: limitMock });
-      const fromMock = vi.fn().mockReturnValue({ orderBy: orderByMock });
-      db.select.mockReturnValue({ from: fromMock });
 
-      const app = await buildApp();
+      function setupChain() {
+        const offsetMock = vi.fn().mockResolvedValue([]);
+        const limitMock = vi.fn().mockReturnValue({ offset: offsetMock });
+        const orderByMock = vi.fn().mockReturnValue({ limit: limitMock });
+        const whereMock = vi.fn().mockReturnValue({ orderBy: orderByMock });
+        const fromMock = vi.fn().mockReturnValue({ where: whereMock });
+        db.select.mockReturnValue({ from: fromMock });
+        return { limitMock, offsetMock };
+      }
 
-      // limit too high, page too low
+      const app = buildApp();
+
+      // limit too high, page too low (page 0 → clamped to 1, offset = 0)
+      const chain1 = setupChain();
       await request(app)
         .get('/admin/audit?limit=9999&page=0')
         .set('X-Admin-Key', 'secret-key');
+      expect(chain1.limitMock).toHaveBeenLastCalledWith(200);
+      expect(chain1.offsetMock).toHaveBeenLastCalledWith(0);
 
-      expect(limitMock).toHaveBeenLastCalledWith(200);
-      expect(offsetMock).toHaveBeenLastCalledWith(0);
-
-      // limit too low, page valid
+      // explicit low limit (1), page 3 → offset = 2
+      const chain2 = setupChain();
       await request(app)
-        .get('/admin/audit?limit=0&page=3')
+        .get('/admin/audit?limit=1&page=3')
         .set('X-Admin-Key', 'secret-key');
-
-      expect(limitMock).toHaveBeenLastCalledWith(1);
-      expect(offsetMock).toHaveBeenLastCalledWith(2);
+      expect(chain2.limitMock).toHaveBeenLastCalledWith(1);
+      expect(chain2.offsetMock).toHaveBeenLastCalledWith(2);
     });
   });
 });

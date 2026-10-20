@@ -98,3 +98,21 @@ export function decryptSigningSecret(encoded: string, rawKey: string): string | 
     return null;
   }
 }
+
+// ── Webhook secret helpers (#47) ────────────────────────────────────────────
+
+/**
+ * Encrypt a webhook secret with AES-256-GCM using WEBHOOK_ENCRYPTION_KEY.
+ * Uses the same layout as `encryptSigningSecret`: iv + authTag + ciphertext, base64-encoded.
+ */
+export function encryptWebhookSecret(plaintext: string, rawKey: string): string {
+  return encryptSigningSecret(plaintext, rawKey);
+}
+
+/**
+ * Decrypt a value produced by `encryptWebhookSecret`.
+ * Returns null when the key is wrong or the ciphertext is malformed / tampered.
+ */
+export function decryptWebhookSecret(encoded: string, rawKey: string): string | null {
+  return decryptSigningSecret(encoded, rawKey);
+}

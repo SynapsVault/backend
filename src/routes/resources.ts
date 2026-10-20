@@ -53,7 +53,7 @@ import {
 } from "../services/registryClient.js";
 import { parsePayerFromXPayment } from "../lib/parseXPayment.js";
 import { AppError, isAppError } from "../lib/errors.js";
-import { emitToPublisher } from "../services/webhookService.js";
+import { emitToPublisher, enqueueWebhookEvent } from "../services/webhookService.js";
 
 const router: RouterType = Router();
 
@@ -351,8 +351,8 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
       recipientAddress: payment.recipientAddress,
       paidAt: payment.paidAt,
     };
-    void emitToPublisher(resource.publisherId, "resource.purchased", purchase);
-    void emitToPublisher(resource.publisherId, "payment.received", purchase);
+    void enqueueWebhookEvent(resource.publisherId, "resource.purchased", purchase);
+    void enqueueWebhookEvent(resource.publisherId, "payment.received", purchase);
   };
 
   if (resource.resourceType === "link") {

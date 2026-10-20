@@ -266,6 +266,14 @@ const envSchema = z.object({
   // Required when REQUIRE_REQUEST_SIGNATURE is true.
   SIGNING_SECRET_KEY: z.string().min(16).optional(),
 
+  // AES-256 key used to encrypt webhook secrets at rest (#47).
+  // Optional — when unset webhook secrets are NOT encrypted (logged as warning).
+  WEBHOOK_ENCRYPTION_KEY: z.string().min(16).optional(),
+
+  // Admin panel protection key (#49). Optional — when unset admin routes are
+  // disabled (return 401) and a warning is logged at boot.
+  ADMIN_API_KEY: z.string().min(1).optional(),
+
   // HMAC-SHA256 request signatures for publisher mutations.
   // Defaults to true in production; false elsewhere. Override with env var.
   REQUIRE_REQUEST_SIGNATURE: envFlag(
@@ -372,4 +380,32 @@ if (parsed.data.REQUIRE_REQUEST_SIGNATURE && !parsed.data.SIGNING_SECRET_KEY) {
     "[config] SIGNING_SECRET_KEY: required when REQUIRE_REQUEST_SIGNATURE=true (#42)",
   );
   process.exit(1);
+}
+
+// ── Boot-time security warnings (#49) ────────────────────────────────────────
+if (!parsed.data.ADMIN_API_KEY) {
+  rootLogger.warn(
+    { event: "config_admin_key_missing" },
+    "[security] ADMIN_API_KEY is not set — admin routes (/admin/stats, /admin/audit, " +
+    "/admin/delist) are disabled and will return 401. Set ADMIN_API_KEY to a strong " +
+    "random secret to enable them (#49).",
+  );
+  console.warn(
+    "[config] WARNING: ADMIN_API_KEY is not set. Admin routes are disabled. " +
+    "Set ADMIN_API_KEY to enable them (#49).",
+  );
+}
+
+// ── Boot-time security warnings (#47) ────────────────────────────────────────
+if (!parsed.data.WEBHOOK_ENCRYPTION_KEY) {
+  rootLogger.warn(
+    { event: "config_webhook_encryption_key_missing" },
+    "[security] WEBHOOK_ENCRYPTION_KEY is not set — webhook secrets will be stored " +
+    "as plain text in the database. Set WEBHOOK_ENCRYPTION_KEY to a strong random " +
+    "secret to encrypt them at rest (#47).",
+  );
+  console.warn(
+    "[config] WARNING: WEBHOOK_ENCRYPTION_KEY is not set. " +
+    "Webhook secrets are stored in plain text. Set WEBHOOK_ENCRYPTION_KEY to fix this (#47).",
+  );
 }
