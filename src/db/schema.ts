@@ -61,6 +61,10 @@ export const publishers = pgTable(
     // Subscribed WebhookEvent values; null/empty means all events.
     webhookEvents: text("webhook_events").array(),
     webhookEnabled: boolean("webhook_enabled").notNull().default(false),
+    // Per-publisher HMAC signing secret (shown once on creation/rotation, stored
+    // encrypted). Used by requestSignatureAuth (#42) instead of the raw API key
+    // so possession of the key alone is insufficient to forge a valid signature.
+    signingSecret: text("signing_secret"),
     // Set when the publisher rotates their API key. Any key whose hash matches
     // a row with a non-null api_key_revoked_at is rejected by apiKeyAuth (#40).
     apiKeyRevokedAt: timestamp("api_key_revoked_at"),

@@ -22,7 +22,7 @@ vi.mock("../db/client.js", () => ({
   },
 }));
 
-import { deliver, emitToPublisher, signPayload, webhookUrlProblem, SIGNATURE_HEADER } from "./webhookService.js";
+import { deliver, emitToPublisher, signPayload, webhookUrlProblem, SIGNATURE_HEADER, DELIVERY_ID_HEADER } from "./webhookService.js";
 
 function publisherRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -93,14 +93,23 @@ describe("webhookService", () => {
   });
 
   describe("signing", () => {
-    it("signs the exact request body with HMAC-SHA256", async () => {
+    it("signs ${timestamp}.${body} with HMAC-SHA256 so the timestamp is covered (#45)", async () => {
       fetchMock.mockResolvedValue(ok());
       await emitToPublisher("pub-1", "resource.purchased", { id: "r1" });
 
       const [, init] = fetchMock.mock.calls[0];
-      const expected = createHmac("sha256", "super-secret-value-123").update(init.body).digest("hex");
+      const ts = init.headers["X-SynapsVault-Timestamp"] as string;
+      // #45: the HMAC input is "${timestamp}.${body}", not just the body.
+      const expected = createHmac("sha256", "super-secret-value-123").update(`${ts}.${init.body}`).digest("hex");
       expect(init.headers[SIGNATURE_HEADER]).toBe(expected);
-      expect(signPayload(init.body, "super-secret-value-123")).toBe(expected);
+      expect(signPayload(init.body, "super-secret-value-123", ts)).toBe(expected);
+    });
+
+    it("signature changes when the timestamp changes (#45)", async () => {
+      const body = JSON.stringify({ event: "resource.purchased", timestamp: "t1", data: {} });
+      const sig1 = signPayload(body, "secret", "ts-1");
+      const sig2 = signPayload(body, "secret", "ts-2");
+      expect(sig1).not.toBe(sig2);
     });
 
     it("sends the event type and payload", async () => {
@@ -111,6 +120,14 @@ describe("webhookService", () => {
       const body = JSON.parse(init.body);
       expect(body).toMatchObject({ event: "resource.purchased", data: { id: "r1" } });
       expect(init.headers["X-SynapsVault-Event"]).toBe("resource.purchased");
+    });
+
+    it("includes a stable X-SynapsVault-Id delivery header (#45)", async () => {
+      fetchMock.mockResolvedValue(ok());
+      await emitToPublisher("pub-1", "resource.purchased", { id: "r1" });
+
+      const [, init] = fetchMock.mock.calls[0];
+      expect(init.headers[DELIVERY_ID_HEADER]).toMatch(/^wh_[0-9a-f]{32}$/);
     });
 
     it("omits the signature when no secret is configured", async () => {

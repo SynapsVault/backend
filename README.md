@@ -141,14 +141,101 @@ Publishers configure one endpoint with `PATCH /publishers/me/webhooks`
 (`webhookUrl`, `webhookSecret`, `webhookEvents`, `webhookEnabled`). Events:
 `resource.purchased`, `payment.received`, `resource.listed`, `resource.delisted`.
 Deliveries are `POST { event, timestamp, data }`. When a secret is set,
-`X-SynapsVault-Signature` holds the hex HMAC-SHA256 of the raw body:
+`X-SynapsVault-Signature` holds the hex HMAC-SHA256 of `${timestamp}.${body}`,
+where `timestamp` is the ISO-8601 value in `X-SynapsVault-Timestamp` and
+`body` is the raw JSON body (#45). Each delivery also carries a unique
+`X-SynapsVault-Id` header for deduplication.
+
+Verification example (Node.js):
 
 ```js
-const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+const crypto = require("crypto");
+
+function verifyWebhook(req, secret) {
+  const timestamp = req.headers["x-synapsvault-timestamp"];
+  const signature = req.headers["x-synapsvault-signature"];
+
+  // Reject deliveries older than 5 minutes to prevent replays.
+  const age = Date.now() - new Date(timestamp).getTime();
+  if (age > 5 * 60 * 1000) throw new Error("Webhook too old");
+
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}.${req.rawBody}`)   // rawBody = Buffer / string before JSON.parse
+    .digest("hex");
+
+  if (!crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"))) {
+    throw new Error("Invalid webhook signature");
+  }
+}
 ```
 
 Failures are retried with exponential backoff (`WEBHOOK_MAX_ATTEMPTS`).
 Private and loopback URLs are rejected.
+
+### Request signatures (#42, #43, #44)
+
+Publisher mutation endpoints (`POST /resources`, `DELETE /resources/:id`, etc.)
+support — and in production **require** — HMAC-SHA256 request signatures.
+
+**How it works**
+
+Every publisher receives a per-publisher **signing secret** (separate from the
+API key) on registration. The signing secret is the HMAC key, not the API key
+itself. This means an attacker who intercepts the API key cannot forge signed
+requests.
+
+**Signing a request (client side)**
+
+```js
+const crypto = require("crypto");
+
+function signRequest({ signingSecret, method, path, timestamp, bodyHash, idempotencyKey }) {
+  const parts = [method.toUpperCase(), path, timestamp, bodyHash];
+  if (idempotencyKey) parts.push(idempotencyKey);
+  const canonical = parts.join("\n");
+  return crypto.createHmac("sha256", signingSecret).update(canonical, "utf8").digest("hex");
+}
+
+const timestamp = Math.floor(Date.now() / 1000).toString();
+const bodyHash = crypto.createHash("sha256").update(rawBody, "utf8").digest("hex");
+
+const signature = signRequest({
+  signingSecret: "<your signing secret>",
+  method: "POST",
+  path: "/resources/res-1/register",
+  timestamp,
+  bodyHash,
+});
+
+// Add to request headers:
+// x-api-key: <your API key>
+// X-Timestamp: <timestamp>
+// X-Signature: <signature>
+```
+
+**Rotating the signing secret**
+
+```
+POST /publishers/me/signing-secret/rotate
+x-api-key: <your API key>
+```
+
+Returns `{ signingSecret, rotatedAt }`. The new secret is shown once — store it
+securely. The old secret is immediately invalid.
+
+**Environment variables**
+
+| Variable | Default | Description |
+|---|---|---|
+| `REQUIRE_REQUEST_SIGNATURE` | `true` (prod) / `false` (dev) | Enforce HMAC signatures on publisher mutations (#44) |
+| `SIGNING_SECRET_KEY` | — | AES-256 encryption key for signing secrets at rest. Required when `REQUIRE_REQUEST_SIGNATURE=true` (#42) |
+| `SIGNATURE_MAX_SKEW_MS` | `300000` | Max clock skew (ms) for `X-Timestamp` |
+
+**Production behaviour (#44):** `REQUIRE_REQUEST_SIGNATURE` defaults to `true`
+in production. If it is explicitly set to `false`, the server logs a security
+warning at boot. `SIGNING_SECRET_KEY` must be provided when signatures are
+required.
 
 ## Rate limiting
 
