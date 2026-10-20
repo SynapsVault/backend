@@ -9,7 +9,7 @@ import {
   updateRateLimitSchema,
   updateWebhookConfigSchema,
 } from "../schemas/requests.js";
-import { registerPublisher, getPublisherResources, rotateApiKey } from "../services/publisherService.js";
+import { registerPublisher, getPublisherResources, rotateApiKey, rotateSigningSecret } from "../services/publisherService.js";
 import { deliver, webhookUrlProblem } from "../services/webhookService.js";
 import { eq, inArray, sum, count, sql, desc } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -23,13 +23,14 @@ type UpdateWebhookConfig = z.infer<typeof updateWebhookConfigSchema>;
 // POST /publishers — register a new publisher (public)
 router.post("/publishers", registerIpRateLimit, validate(publisherRegisterSchema), async (req, res) => {
   try {
-    const { publisher, apiKey } = await registerPublisher(req.body);
+    const { publisher, apiKey, signingSecret } = await registerPublisher(req.body);
     res.status(201).json({
       id: publisher.id,
       name: publisher.name,
       email: publisher.email,
       walletAddress: publisher.walletAddress,
-      apiKey, // shown once — store it securely
+      apiKey,          // shown once — store it securely
+      signingSecret,   // shown once — use this as the HMAC secret for request signatures (#42)
       createdAt: publisher.createdAt,
     });
   } catch (err: any) {
@@ -86,6 +87,17 @@ router.post("/publishers/me/api-keys/rotate", apiKeyAuth, publisherRateLimit, as
   const newApiKey = await rotateApiKey(req.publisher!.id);
   res.json({
     apiKey: newApiKey, // shown once — store it securely
+    rotatedAt: new Date().toISOString(),
+  });
+});
+
+// POST /publishers/me/signing-secret/rotate — issue a new HMAC signing secret (#42)
+// The new secret is returned once in plaintext; all existing request signatures
+// signed with the old secret are immediately invalid.
+router.post("/publishers/me/signing-secret/rotate", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const newSigningSecret = await rotateSigningSecret(req.publisher!.id);
+  res.json({
+    signingSecret: newSigningSecret, // shown once — store it securely, use as HMAC secret
     rotatedAt: new Date().toISOString(),
   });
 });

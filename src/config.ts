@@ -262,8 +262,17 @@ const envSchema = z.object({
   // Advisory lock key used to elect the single worker leader across replicas.
   WORKER_LEADER_LOCK_ID: z.coerce.number().int().default(4_021_001),
 
-  // Optional HMAC-SHA256 request signatures for publisher mutations (off by default).
-  REQUIRE_REQUEST_SIGNATURE: envFlag(false),
+  // AES-256 key used to encrypt per-publisher signing secrets at rest (#42).
+  // Required when REQUIRE_REQUEST_SIGNATURE is true.
+  SIGNING_SECRET_KEY: z.string().min(16).optional(),
+
+  // HMAC-SHA256 request signatures for publisher mutations.
+  // Defaults to true in production; false elsewhere. Override with env var.
+  REQUIRE_REQUEST_SIGNATURE: envFlag(
+    typeof process !== "undefined" && (process.env.NODE_ENV ?? "development") === "production"
+      ? true
+      : false
+  ),
   // Legacy register flow where the server signs with the platform registry key
   // on the creator's behalf (#80). Off by default; clients must send signedXdr.
   ALLOW_LEGACY_REGISTER: envFlag(false),
@@ -337,3 +346,30 @@ if (networkIssues.length > 0) {
 }
 
 export const config = parsed.data;
+
+// ── Boot-time security warnings (#44) ────────────────────────────────────────
+if (parsed.data.NODE_ENV === "production" && !parsed.data.REQUIRE_REQUEST_SIGNATURE) {
+  rootLogger.warn(
+    { event: "config_signature_disabled" },
+    "[security] REQUIRE_REQUEST_SIGNATURE is off in production — publisher mutation " +
+    "endpoints accept a bare API key without a signed request. Set " +
+    "REQUIRE_REQUEST_SIGNATURE=true and SIGNING_SECRET_KEY to enforce HMAC-signed " +
+    "requests (#44).",
+  );
+  console.warn(
+    "[config] WARNING: REQUIRE_REQUEST_SIGNATURE=false in production. " +
+    "Publisher mutations are not protected by HMAC signatures. " +
+    "Set REQUIRE_REQUEST_SIGNATURE=true and SIGNING_SECRET_KEY to fix this (#44).",
+  );
+}
+
+if (parsed.data.REQUIRE_REQUEST_SIGNATURE && !parsed.data.SIGNING_SECRET_KEY) {
+  rootLogger.error(
+    { event: "config_signing_key_missing" },
+    "SIGNING_SECRET_KEY is required when REQUIRE_REQUEST_SIGNATURE=true (#42).",
+  );
+  console.error(
+    "[config] SIGNING_SECRET_KEY: required when REQUIRE_REQUEST_SIGNATURE=true (#42)",
+  );
+  process.exit(1);
+}

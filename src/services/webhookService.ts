@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../db/client.js";
@@ -32,10 +32,15 @@ export interface DeliveryResult {
 const BASE_RETRY_DELAY_MS = 1_000;
 
 export const SIGNATURE_HEADER = "X-SynapsVault-Signature";
+export const DELIVERY_ID_HEADER = "X-SynapsVault-Id";
 
-/** Hex HMAC-SHA256 of the raw request body, keyed by the publisher's webhook secret. */
-export function signPayload(body: string, secret: string): string {
-  return createHmac("sha256", secret).update(body).digest("hex");
+/**
+ * Hex HMAC-SHA256 of `${timestamp}.${body}`, keyed by the publisher's webhook
+ * secret (#45). Including the timestamp in the signed payload means a receiver
+ * can reject a replayed delivery whose timestamp falls outside a freshness window.
+ */
+export function signPayload(body: string, secret: string, timestamp: string): string {
+  return createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex");
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -51,13 +56,18 @@ export async function deliver(
 ): Promise<DeliveryResult> {
   const log = getLogger();
   const body = JSON.stringify(payload);
+  // Each delivery gets a unique, stable id so receivers can deduplicate
+  // retried deliveries (#45).
+  const deliveryId = `wh_${randomBytes(16).toString("hex")}`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "User-Agent": "SynapsVault-Webhooks/1.0",
     "X-SynapsVault-Event": payload.event,
     "X-SynapsVault-Timestamp": payload.timestamp,
+    [DELIVERY_ID_HEADER]: deliveryId,
   };
-  if (target.secret) headers[SIGNATURE_HEADER] = signPayload(body, target.secret);
+  // Sign ${timestamp}.${body} so the timestamp is covered by the HMAC (#45).
+  if (target.secret) headers[SIGNATURE_HEADER] = signPayload(body, target.secret, payload.timestamp);
 
   const maxAttempts = Math.max(1, options.maxAttempts ?? config.WEBHOOK_MAX_ATTEMPTS);
   let lastStatus: number | undefined;

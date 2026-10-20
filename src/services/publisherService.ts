@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { publishers, resources } from "../db/schema.js";
-import { generateApiKey, hashApiKey } from "../utils/crypto.js";
+import { generateApiKey, hashApiKey, generateSigningSecret, encryptSigningSecret } from "../utils/crypto.js";
+import { config } from "../config.js";
 
 export async function registerPublisher(data: {
   name: string;
@@ -11,6 +12,15 @@ export async function registerPublisher(data: {
   const apiKey = generateApiKey();
   const apiKeyHash = hashApiKey(apiKey);
 
+  // Issue a signing secret and encrypt it at rest (#42). When
+  // SIGNING_SECRET_KEY is not configured, signing secrets are stored
+  // unencrypted (acceptable only in development / before signatures are
+  // required).
+  const signingSecret = generateSigningSecret();
+  const storedSigningSecret = config.SIGNING_SECRET_KEY
+    ? encryptSigningSecret(signingSecret, config.SIGNING_SECRET_KEY)
+    : signingSecret;
+
   const [publisher] = await db
     .insert(publishers)
     .values({
@@ -18,10 +28,11 @@ export async function registerPublisher(data: {
       email: data.email,
       walletAddress: data.walletAddress,
       apiKeyHash,
+      signingSecret: storedSigningSecret,
     })
     .returning();
 
-  return { publisher, apiKey };
+  return { publisher, apiKey, signingSecret };
 }
 
 export async function getPublisherById(id: string) {
@@ -61,6 +72,26 @@ export async function rotateApiKey(publisherId: string): Promise<string> {
   return newApiKey;
 }
 
+/**
+ * Rotate the per-publisher HMAC signing secret (#42).
+ *
+ * Generates a new secret, encrypts it, persists it, and returns the plaintext
+ * (shown once — the caller must store it; the server never exposes it again).
+ */
+export async function rotateSigningSecret(publisherId: string): Promise<string> {
+  const signingSecret = generateSigningSecret();
+  const storedSigningSecret = config.SIGNING_SECRET_KEY
+    ? encryptSigningSecret(signingSecret, config.SIGNING_SECRET_KEY)
+    : signingSecret;
+
+  await db
+    .update(publishers)
+    .set({ signingSecret: storedSigningSecret })
+    .where(eq(publishers.id, publisherId));
+
+  return signingSecret;
+}
+
 export async function getPublisherWebhookConfig(publisherId: string) {
   const publisher = await getPublisherById(publisherId);
   if (!publisher) {
@@ -74,4 +105,3 @@ export async function getPublisherWebhookConfig(publisherId: string) {
     enabled: publisher.webhookEnabled ?? false,
   };
 }
-

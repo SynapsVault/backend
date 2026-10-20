@@ -6,3 +6,20 @@ dist/
 .DS_Store
 coverage/
 last-processed-ledger.json
+
+# Test snapshots and vitest cache
+**/__snapshots__/
+.vitest-cache/
+vitest.d.ts
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS artefacts
+Thumbs.db

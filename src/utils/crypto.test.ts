@@ -70,3 +70,47 @@ describe("hashLinkResource (issue #13)", () => {
     expect(hashLinkResource(url, "Title A")).not.toBe(hashLinkResource(url, "Title B"));
   });
 });
+
+import {
+  generateSigningSecret,
+  encryptSigningSecret,
+  decryptSigningSecret,
+} from "./crypto.js";
+
+describe("signing secret helpers (#42)", () => {
+  const KEY = "test-encryption-key-32bytes-long!!";
+
+  it("generateSigningSecret returns a svs_ prefixed hex string", () => {
+    const s = generateSigningSecret();
+    expect(s).toMatch(/^svs_[0-9a-f]{64}$/);
+  });
+
+  it("each call returns a unique secret", () => {
+    expect(generateSigningSecret()).not.toBe(generateSigningSecret());
+  });
+
+  it("encrypt then decrypt round-trips correctly", () => {
+    const plain = generateSigningSecret();
+    const enc = encryptSigningSecret(plain, KEY);
+    expect(enc).not.toBe(plain);
+    expect(decryptSigningSecret(enc, KEY)).toBe(plain);
+  });
+
+  it("decryptSigningSecret returns null for wrong key", () => {
+    const enc = encryptSigningSecret("svs_secret", KEY);
+    expect(decryptSigningSecret(enc, "wrong-key-that-is-at-least-16chars")).toBeNull();
+  });
+
+  it("decryptSigningSecret returns null for tampered ciphertext", () => {
+    const enc = encryptSigningSecret("svs_secret", KEY);
+    const tampered = Buffer.from(enc, "base64");
+    tampered[tampered.length - 1] ^= 0xff;
+    expect(decryptSigningSecret(tampered.toString("base64"), KEY)).toBeNull();
+  });
+
+  it("ciphertext changes each call (different IV)", () => {
+    const enc1 = encryptSigningSecret("svs_secret", KEY);
+    const enc2 = encryptSigningSecret("svs_secret", KEY);
+    expect(enc1).not.toBe(enc2);
+  });
+});
