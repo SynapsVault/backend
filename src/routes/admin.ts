@@ -49,11 +49,16 @@ router.get("/admin/stats", adminAuth, async (_req, res) => {
 /** POST /admin/delist/:id */
 router.post("/admin/delist/:id", adminAuth, async (req, res) => {
   const id = req.params.id as string;
-  const resource = await adminDelistResource(id);
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() || undefined : undefined;
+  // Use a digest of the admin key as the actor identifier so the audit log
+  // is attributable without storing the raw key.
+  const rawKey = req.headers["x-admin-key"] as string;
+  const actor = `admin:${createHash("sha256").update(rawKey).digest("hex").slice(0, 12)}`;
+  const resource = await adminDelistResource(id, { reason, actor });
   if (!resource) {
     throw new AppError("NOT_FOUND", "Resource not found");
   }
-  getLogger().warn({ resourceId: id, event: "admin_delist" }, "resource delisted by admin");
+  getLogger().warn({ resourceId: id, event: "admin_delist", actor, reason }, "resource delisted by admin");
   res.json({ success: true, id, delistedAt: new Date().toISOString() });
 });
 

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, and, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { resources, ledgerCheckpoints } from "../db/schema.js";
 import { config } from "../config.js";
@@ -189,16 +189,27 @@ async function handleTransferEvent(event: SorobanEvent): Promise<void> {
   }
 }
 
-async function handleSetListedEvent(event: SorobanEvent): Promise<void> {
+export async function handleSetListedEvent(event: SorobanEvent): Promise<void> {
   const id = extractResourceId(event.topic);
   if (!id) return;
 
   const listed = event.value.type === "bool" ? event.value.value === "true" : null;
   if (listed !== null) {
-    await db.update(resources).set({ listed }).where(eq(resources.id, id));
+    // Never re-list a resource that an admin has delisted (#51). The WHERE
+    // adminDelistedAt IS NULL guard ensures that chain-sync cannot undo an
+    // admin delist; unlisting (listed=false) is still allowed unconditionally.
+    const updated = await db
+      .update(resources)
+      .set({ listed })
+      .where(
+        listed
+          ? and(eq(resources.id, id), isNull(resources.adminDelistedAt))
+          : eq(resources.id, id),
+      )
+      .returning({ id: resources.id });
 
     getLogger().info(
-      { event: "event_setlisted", resourceId: id, listed },
+      { event: "event_setlisted", resourceId: id, listed, skippedAdminLock: listed && updated.length === 0 },
       "synced set_listed event",
     );
   }

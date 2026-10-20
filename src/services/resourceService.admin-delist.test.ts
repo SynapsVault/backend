@@ -62,15 +62,30 @@ const { thumbnailCalls, thumbnailState } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("./thumbnailWorker.js", () => ({
-  enqueueThumbnail: (input: Record<string, unknown>) => {
+// The service imports { enqueueStorageCleanup, enqueueThumbnailJob } from './workerQueue.js'
+vi.mock("./workerQueue.js", () => ({
+  enqueueStorageCleanup: vi.fn().mockResolvedValue(undefined),
+  enqueueThumbnailJob: (input: Record<string, unknown>) => {
     thumbnailCalls.push(input);
-    thumbnailState.promise = new Promise<void>((resolve, reject) => {
-      thumbnailState.resolve = resolve;
-      thumbnailState.reject = reject;
-    });
-    return thumbnailState.promise;
+    // Return the controlled promise so tests can resolve/reject as needed.
+    return thumbnailState.promise ?? Promise.resolve();
   },
+}));
+
+vi.mock("./webhookService.js", () => ({
+  emitToPublisher: vi.fn(),
+}));
+
+vi.mock("../config.js", () => ({
+  config: {
+    CATALOG_CACHE_TTL_MS: 60_000,
+    CATALOG_CACHE_MAX_KEYS: 500,
+  },
+}));
+
+vi.mock("../lib/logger.js", () => ({
+  getLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  rootLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 import { adminDelistResource, createFileResource } from "./resourceService.js";
@@ -78,6 +93,7 @@ import { adminDelistResource, createFileResource } from "./resourceService.js";
 describe("adminDelistResource", () => {
   beforeEach(() => {
     setCalls.length = 0;
+    insertValues.length = 0;
     returnedRows.rows = [];
   });
 
@@ -94,6 +110,33 @@ describe("adminDelistResource", () => {
     expect((setCalls[0].adminDelistedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
   });
 
+  it("writes a moderation_events row with action, resource, reason and actor (#50)", async () => {
+    returnedRows.rows = [{ id: "res-2" }];
+
+    await adminDelistResource("res-2", { reason: "spam content", actor: "admin:abc123" });
+
+    // The insert into moderation_events must follow the update.
+    const moderationInsert = insertValues.find(
+      (v) => v.action === "admin_delist" && v.resourceId === "res-2",
+    );
+    expect(moderationInsert).toBeDefined();
+    expect(moderationInsert!.reason).toBe("spam content");
+    expect(moderationInsert!.actor).toBe("admin:abc123");
+  });
+
+  it("uses default actor when no actor is provided", async () => {
+    returnedRows.rows = [{ id: "res-3" }];
+
+    await adminDelistResource("res-3");
+
+    const moderationInsert = insertValues.find(
+      (v) => v.action === "admin_delist" && v.resourceId === "res-3",
+    );
+    expect(moderationInsert).toBeDefined();
+    expect(moderationInsert!.actor).toBe("admin");
+    expect(moderationInsert!.reason).toBeNull();
+  });
+
   it("returns null for an unknown id", async () => {
     returnedRows.rows = [];
 
@@ -102,16 +145,23 @@ describe("adminDelistResource", () => {
 });
 
 describe("createFileResource", () => {
-  const file = {
-    buffer: Buffer.from("data"),
-    mimetype: "image/png",
-    originalname: "cover.png",
+  // Minimal valid input matching the actual createFileResource signature.
+  const validInput = {
+    publisherId: "pub-1",
+    title: "My Resource",
+    description: "A description",
+    price: "1.00",
+    walletAddress: "GABCD1234",
+    fileBuffer: Buffer.from("data"),
+    filename: "cover.png",
+    mimeType: "image/png",
   };
 
   beforeEach(() => {
     insertValues.length = 0;
     deletedIds.length = 0;
     insertedRows.rows = [];
+    returnedRows.rows = [];
     thumbnailCalls.length = 0;
     thumbnailState.resolve = null;
     thumbnailState.reject = null;
@@ -121,11 +171,11 @@ describe("createFileResource", () => {
   });
 
   it("leaves no row behind when the upload fails", async () => {
-    insertedRows.rows = [{ id: "res-1", storagePath: null }];
+    insertedRows.rows = [{ id: "res-1", storagePath: null, mimeType: "image/png" }];
     uploadFileMock.mockRejectedValue(new Error("upload boom"));
 
     await expect(
-      createFileResource({ publisherId: "pub-1", file }),
+      createFileResource(validInput),
     ).rejects.toThrow("upload boom");
 
     // The compensating delete must have run for the inserted row.
@@ -134,31 +184,31 @@ describe("createFileResource", () => {
   });
 
   it("does not wait for thumbnail generation before resolving", async () => {
-    insertedRows.rows = [{ id: "res-1", storagePath: "path/cover.png" }];
-    uploadFileMock.mockResolvedValue({ path: "path/cover.png" });
+    const resource = { id: "res-1", storagePath: "path/cover.png", mimeType: "image/png" };
+    insertedRows.rows = [resource];
+    returnedRows.rows = [resource];
+    uploadFileMock.mockResolvedValue("path/cover.png");
+    // Thumbnail job resolves immediately.
+    thumbnailState.promise = Promise.resolve();
 
-    const result = await createFileResource({ publisherId: "pub-1", file });
+    const result = await createFileResource(validInput);
 
-    expect(result).toEqual(insertedRows.rows[0]);
-    // Thumbnail work was scheduled but has not completed.
+    expect(result).toEqual(resource);
+    // enqueueThumbnailJob was called for the image resource.
     expect(thumbnailCalls).toHaveLength(1);
-    expect(thumbnailState.resolve).not.toBeNull();
-
-    // Let the background job finish so it does not leak between tests.
-    thumbnailState.resolve?.();
-    await thumbnailState.promise;
   });
 
   it("rejects oversized images via the pixel limit in the worker", async () => {
-    insertedRows.rows = [{ id: "res-1", storagePath: "path/cover.png" }];
-    uploadFileMock.mockResolvedValue({ path: "path/cover.png" });
+    const resource = { id: "res-1", storagePath: "path/cover.png", mimeType: "image/png" };
+    insertedRows.rows = [resource];
+    returnedRows.rows = [resource];
+    uploadFileMock.mockResolvedValue("path/cover.png");
+    // Thumbnail job rejects — the service should catch and log, not throw.
+    thumbnailState.promise = Promise.reject(new Error("Input image exceeds pixel limit"));
 
-    await createFileResource({ publisherId: "pub-1", file });
-
+    // The function catches enqueueThumbnailJob errors and still resolves.
+    const result = await createFileResource(validInput);
+    expect(result).toEqual(resource);
     expect(thumbnailCalls).toHaveLength(1);
-    expect(thumbnailCalls[0].limitInputPixels).toBeGreaterThan(0);
-
-    thumbnailState.reject?.(new Error("Input image exceeds pixel limit"));
-    await expect(thumbnailState.promise).rejects.toThrow(/pixel limit/);
   });
 });

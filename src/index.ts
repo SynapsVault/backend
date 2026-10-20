@@ -194,6 +194,13 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (err) => {
-  rootLogger.error({ event: "uncaught_exception", err }, "uncaught exception");
+  rootLogger.error({ event: "uncaught_exception", err }, "uncaught exception — flushing and exiting");
   captureServerException(err);
+  // Flush Sentry with a short timeout so the event is delivered before we exit,
+  // then always terminate with code 1 so the platform can restart the service.
+  // We do not await inside a sync handler, so we use .then/.catch to ensure
+  // exit is always called even if flush rejects.
+  void import("@sentry/node").then(({ flush }) =>
+    flush(2000).finally(() => process.exit(1)),
+  ).catch(() => process.exit(1));
 });

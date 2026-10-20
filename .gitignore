@@ -7,6 +7,13 @@ dist/
 coverage/
 last-processed-ledger.json
 
+# Test artefacts
+**/__snapshots__/
+*.snap
+.vitest-cache/
+test-results/
+
+# Editor / OS
 # Test snapshots, vitest cache, and coverage artefacts
 **/__snapshots__/
 .vitest-cache/
@@ -21,6 +28,11 @@ vitest.d.ts
 .idea/
 *.swp
 *.swo
+Thumbs.db
+
+# Build artefacts
+*.tsbuildinfo
+
 
 # OS artefacts
 Thumbs.db

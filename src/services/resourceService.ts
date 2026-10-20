@@ -1,6 +1,6 @@
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { resources, publishers, verifications } from "../db/schema.js";
+import { resources, publishers, verifications, moderationEvents } from "../db/schema.js";
 import { uploadFile, deleteFile } from "../storage/supabaseStorage.js";
 import { hashFileResource, hashLinkResource } from "../utils/crypto.js";
 import { createTtlCache } from "../lib/ttlCache.js";
@@ -38,14 +38,27 @@ function invalidateReads(resourceId?: string): void {
 }
 
 /** Admin moderation delist (any publisher). Returns null when the id is unknown. */
-export async function adminDelistResource(id: string) {
+export async function adminDelistResource(
+  id: string,
+  options: { reason?: string; actor?: string } = {},
+) {
   const [resource] = await db
     .update(resources)
     .set({ listed: false, adminDelistedAt: new Date() })
     .where(eq(resources.id, id))
     .returning({ id: resources.id });
-  if (resource) invalidateReads(resource.id);
-  return resource ?? null;
+  if (!resource) return null;
+
+  // Write an immutable audit record so the moderation action is reviewable (#50).
+  await db.insert(moderationEvents).values({
+    resourceId: resource.id,
+    action: "admin_delist",
+    reason: options.reason ?? null,
+    actor: options.actor ?? "admin",
+  });
+
+  invalidateReads(resource.id);
+  return resource;
 }
 
 /** Test helper — clear the read caches between cases. */
