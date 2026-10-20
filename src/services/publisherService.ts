@@ -9,6 +9,10 @@ export async function registerPublisher(data: {
   email: string;
   walletAddress: string;
 }) {
+  // Normalise the email so that Ada@x.com and ada@x.com are treated as the
+  // same address and the unique constraint reliably catches duplicates (#39).
+  const email = data.email.trim().toLowerCase();
+
   const apiKey = generateApiKey();
   const apiKeyHash = hashApiKey(apiKey);
 
@@ -25,7 +29,7 @@ export async function registerPublisher(data: {
     .insert(publishers)
     .values({
       name: data.name,
-      email: data.email,
+      email,
       walletAddress: data.walletAddress,
       apiKeyHash,
       signingSecret: storedSigningSecret,
