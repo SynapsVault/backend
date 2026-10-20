@@ -6,3 +6,20 @@ dist/
 .DS_Store
 coverage/
 last-processed-ledger.json
+
+# Test artefacts
+**/__snapshots__/
+*.snap
+.vitest-cache/
+test-results/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+
+# Build artefacts
+*.tsbuildinfo
+

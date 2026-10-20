@@ -1,4 +1,5 @@
 import { Router, type Router as RouterType } from "express";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { getCachedProbes } from "../lib/probes.js";
 import { overallReadinessStatus } from "../lib/readiness.js";
 import { isAccepting } from "../lib/lifecycle.js";
@@ -44,11 +45,23 @@ router.get("/health/ready", async (_req, res) => {
   });
 });
 
-// Debug DB endpoint — exposes schema details, so never served in production.
-router.get("/debug/db", async (_req, res) => {
-  if (config.NODE_ENV === "production") {
+// Debug DB endpoint — only served when ENABLE_DEBUG_ROUTES=true AND the caller
+// supplies the correct X-Admin-Key, so staging/preview deployments are safe.
+router.get("/debug/db", async (req, res) => {
+  if (!process.env.ENABLE_DEBUG_ROUTES || process.env.ENABLE_DEBUG_ROUTES !== "true") {
     throw new AppError("NOT_FOUND", "Not found");
   }
+
+  // Require the admin key — constant-time comparison to prevent timing attacks.
+  function digest(value: string): Buffer {
+    return createHash("sha256").update(value).digest();
+  }
+  const expected = process.env.ADMIN_API_KEY;
+  const key = req.headers["x-admin-key"];
+  if (!expected || typeof key !== "string" || !timingSafeEqual(digest(key), digest(expected))) {
+    throw new AppError("UNAUTHORIZED", "Unauthorized");
+  }
+
   try {
     // Use raw postgres client to avoid drizzle abstraction
     const result = await pgClient`SELECT current_database() as db, current_schema() as schema, version() as pg_version`;

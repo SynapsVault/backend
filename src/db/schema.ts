@@ -232,3 +232,29 @@ export const ledgerCheckpoints = pgTable("ledger_checkpoints", {
   lastLedger: integer("last_ledger").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// Moderation events — immutable audit log of admin actions on resources (#50).
+// Written whenever an admin delists a resource so the action is reviewable later.
+export const moderationEvents = pgTable(
+  "moderation_events",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => createId()),
+    // The resource that was acted upon.
+    resourceId: text("resource_id")
+      .notNull()
+      .references(() => resources.id),
+    // The moderation action taken (e.g. "admin_delist").
+    action: text("action").notNull(),
+    // Optional free-text reason supplied by the admin.
+    reason: text("reason"),
+    // Identifier of the actor (admin key digest or "admin" when unset).
+    actor: text("actor").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Fast lookup of all moderation events for a given resource.
+    resourceIdIdx: index("idx_moderation_events_resource_id").on(table.resourceId),
+  }),
+);
