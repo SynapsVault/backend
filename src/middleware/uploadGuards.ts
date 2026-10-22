@@ -3,13 +3,18 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import { config } from "../config.js";
-import { AppError } from "../lib/AppError.js";
+import { AppError } from "../lib/errors.js";
 import { parseAllowedMimeTypes, validateUpload } from "../lib/uploadValidation.js";
 
 const allowedMimeTypes = parseAllowedMimeTypes(config.ALLOWED_UPLOAD_MIME_TYPES);
 
 const maxConcurrentUploads = config.MAX_CONCURRENT_UPLOADS ?? 4;
 let activeUploads = 0;
+
+/** Test hook: number of uploads currently holding a concurrency slot. */
+export function __getActiveUploadCount(): number {
+  return activeUploads;
+}
 
 const upload = multer({
   storage: multer.diskStorage({ destination: os.tmpdir() }),
@@ -29,7 +34,7 @@ export function singleFileUpload(field = "file"): RequestHandler {
   const handler = upload.single(field);
   return (req: Request, res: Response, next: NextFunction) => {
     if (activeUploads >= maxConcurrentUploads) {
-      res.status(503).json({ error: "Too many concurrent uploads, please retry shortly" });
+      next(new AppError("SERVICE_UNAVAILABLE", "Too many concurrent uploads, please retry shortly"));
       return;
     }
     activeUploads++;
@@ -49,18 +54,23 @@ export function singleFileUpload(field = "file"): RequestHandler {
         if (err.code === "LIMIT_FILE_SIZE") {
           next(
             new AppError(
-              `File exceeds the maximum size of ${config.MAX_FILE_SIZE_MB}MB`,
-              413,
               "PAYLOAD_TOO_LARGE",
+              `File exceeds the maximum size of ${config.MAX_FILE_SIZE_MB}MB`,
             ),
           );
           return;
         }
-        next(new AppError(`Upload error: ${err.message}`, 400, "VALIDATION_ERROR"));
+        next(new AppError("VALIDATION_ERROR", `Upload error: ${err.message}`));
         return;
       }
       if (err) {
         release();
+        // Busboy parse failures (malformed multipart) are client errors; system
+        // errors such as a full temp disk carry an errno `code` and stay 5xx.
+        if (err instanceof Error && !(err as NodeJS.ErrnoException).code) {
+          next(new AppError("VALIDATION_ERROR", `Malformed multipart body: ${err.message}`));
+          return;
+        }
         next(err);
         return;
       }
@@ -86,7 +96,7 @@ export function validateUploadContentType(req: Request, res: Response, next: Nex
       const result = validateUpload(buffer, file.mimetype, allowedMimeTypes);
       if (!result.ok) {
         return fs.unlink(file.path).catch(() => undefined).then(() => {
-          next(new AppError(result.error, result.status, "VALIDATION_ERROR"));
+          next(new AppError("UNSUPPORTED_MEDIA_TYPE", result.error));
         });
       }
       next();

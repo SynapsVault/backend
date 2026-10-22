@@ -36,10 +36,12 @@ const app = createApp();
 // Advisory lock key used to elect a single leader across replicas. Only the
 // instance holding this lock runs the background workers, so scaling out does
 // not duplicate RPC load or let replicas write the same rows concurrently.
-const WORKER_LEADER_LOCK_ID = 0x53594e41; // "SYNA"
+const WORKER_LEADER_LOCK_ID = config.WORKER_LEADER_LOCK_ID;
 
 let workersStarted = false;
-let leaderLockHeld = false;
+// Advisory locks are session-scoped, so the connection that took the lock is
+// reserved for the process lifetime and the unlock must run on it too.
+let leaderConnection: Awaited<ReturnType<typeof pgClient.reserve>> | null = null;
 
 /**
  * Try to become the worker leader by acquiring a session-level Postgres
@@ -50,23 +52,14 @@ let leaderLockHeld = false;
  */
 async function tryAcquireWorkerLeaderLock(): Promise<boolean> {
   try {
-    const client = await pgClient.connect();
-    const result = await client.query<{ locked: boolean }>(
-      "SELECT pg_try_advisory_lock($1) AS locked",
-      [WORKER_LEADER_LOCK_ID],
-    );
-    const locked = result.rows[0]?.locked === true;
-    if (locked) {
-      leaderLockHeld = true;
-      // Keep the connection open for the process lifetime so the session-level
-      // lock stays held. Release it explicitly on shutdown.
-      client.on("error", (err) => {
-        rootLogger.error({ event: "worker_leader_lock_error", err }, "worker leader lock connection error");
-      });
+    const reserved = await pgClient.reserve();
+    const [row] = await reserved<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(${WORKER_LEADER_LOCK_ID}) AS locked`;
+    if (row?.locked === true) {
+      leaderConnection = reserved;
       return true;
     }
     // Not the leader: return the connection to the pool.
-    client.release();
+    reserved.release();
     return false;
   } catch (err) {
     rootLogger.error({ event: "worker_leader_lock_error", err }, "failed to acquire worker leader lock");
@@ -75,17 +68,15 @@ async function tryAcquireWorkerLeaderLock(): Promise<boolean> {
 }
 
 async function releaseWorkerLeaderLock(): Promise<void> {
-  if (!leaderLockHeld) return;
-  leaderLockHeld = false;
+  const reserved = leaderConnection;
+  if (!reserved) return;
+  leaderConnection = null;
   try {
-    const client = await pgClient.connect();
-    try {
-      await client.query("SELECT pg_advisory_unlock($1)", [WORKER_LEADER_LOCK_ID]);
-    } finally {
-      client.release();
-    }
+    await reserved`SELECT pg_advisory_unlock(${WORKER_LEADER_LOCK_ID})`;
   } catch (err) {
     rootLogger.error({ event: "worker_leader_unlock_error", err }, "failed to release worker leader lock");
+  } finally {
+    reserved.release();
   }
 }
 

@@ -20,6 +20,8 @@ export interface TtlCache<T> {
   set(key: string, value: T, ttlMs?: number): void;
   delete(key: string): void;
   clear(): void;
+  /** Number of stored entries (expired ones count until they are next read). */
+  readonly size: number;
 }
 
 export interface TtlCacheOptions {
@@ -78,6 +80,9 @@ export function createTtlCache<T>(options: TtlCacheOptions): TtlCache<T> {
     },
     clear() {
       store.clear();
+    },
+    get size() {
+      return store.size;
     },
   };
 }

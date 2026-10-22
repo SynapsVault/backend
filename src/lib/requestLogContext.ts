@@ -23,7 +23,7 @@ export function getRequestLogContext(req: Request): {
   query?: Record<string, string | string[]>;
 } {
   const query = Object.fromEntries(
-    Object.entries(req.query).filter(
+    Object.entries(req.query ?? {}).filter(
       ([key, value]) => SAFE_QUERY_KEYS.has(key) && isSafeQueryValue(value),
     ),
   ) as Record<string, string | string[]>;

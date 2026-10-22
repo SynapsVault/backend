@@ -1,179 +1,119 @@
-import express from 'express';
-import request from 'supertest';
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import express from "express";
+import request from "supertest";
+import { Keypair } from "@stellar/stellar-sdk";
 
-jest.mock('../db', () => ({
-  getPaymentById: jest.fn(),
-  getPaymentsByBuyer: jest.fn(),
-}));
+const { select } = vi.hoisted(() => ({ select: vi.fn() }));
+vi.mock("../db/client.js", () => ({ db: { select } }));
 
-jest.mock('../middleware/auth', () => ({
-  requireWalletSignature: jest.fn(),
-  requirePublisherApiKey: jest.fn(),
-}));
+import paymentsRouter from "./payments.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 
-import * as db from '../db';
-import { requireWalletSignature, requirePublisherApiKey } from '../middleware/auth';
-import paymentsRouter from './payments';
-
-const mockedDb = db as jest.Mocked<typeof db>;
-const mockedRequireWalletSignature = requireWalletSignature as jest.Mock;
-const mockedRequirePublisherApiKey = requirePublisherApiKey as jest.Mock;
-
-const PAYER = '0x1111111111111111111111111111111111111111';
-const RECIPIENT = '0x2222222222222222222222222222222222222222';
-const OTHER = '0x3333333333333333333333333333333333333333';
-const PAYMENT_ID = 'pay_123';
-
-const basePayment = {
-  id: PAYMENT_ID,
-  payer: PAYER,
-  recipient: RECIPIENT,
-  amount: '1000000',
-  asset: 'USDC',
-  status: 'completed',
-  createdAt: '2024-01-01T00:00:00.000Z',
-  txHash: '0xabc',
+const payer = Keypair.random();
+const recipient = Keypair.random();
+const other = Keypair.random();
+const receiptPath = "/payments/pay_123/receipt";
+const payment = {
+  id: "pay_123",
+  resourceId: "resource_123",
+  payerAddress: payer.publicKey(),
+  recipientAddress: recipient.publicKey(),
+  amount: "1.00",
+  paidAt: "2026-01-01T00:00:00.000Z",
 };
 
-function createApp() {
-  const app = express();
-  app.use(express.json());
-  app.use('/payments', paymentsRouter);
-  return app;
+function app() {
+  const server = express();
+  server.use(paymentsRouter);
+  server.use(errorHandler);
+  return server;
 }
 
-function walletAuthAs(address: string) {
-  mockedRequireWalletSignature.mockImplementation((req: any, _res: any, next: any) => {
-    req.walletAddress = address;
-    next();
+function rows(value: unknown[]) {
+  const result = Promise.resolve(value);
+  select.mockReturnValueOnce({
+    from: () => ({ where: () => Object.assign(result, { orderBy: () => result }) }),
   });
 }
 
-function walletAuthMissing() {
-  mockedRequireWalletSignature.mockImplementation((_req: any, res: any) => {
-    res.status(401).json({ error: 'Missing or invalid wallet signature' });
-  });
+function auth(key: Keypair, path: string, timestamp = String(Math.floor(Date.now() / 1000))) {
+  return {
+    "x-wallet-address": key.publicKey(),
+    "x-wallet-timestamp": timestamp,
+    "x-wallet-signature": key.sign(Buffer.from(`synapsvault-wallet-auth-v1\nGET\n${path}\n${timestamp}`)).toString("base64"),
+  };
 }
 
-function walletAuthInvalid() {
-  mockedRequireWalletSignature.mockImplementation((_req: any, res: any) => {
-    res.status(401).json({ error: 'Missing or invalid wallet signature' });
-  });
-}
+beforeEach(() => vi.resetAllMocks());
 
-function publisherAuthAs(address: string) {
-  mockedRequirePublisherApiKey.mockImplementation((req: any, _res: any, next: any) => {
-    req.publisherAddress = address;
-    next();
-  });
-}
-
-function publisherAuthMissing() {
-  mockedRequirePublisherApiKey.mockImplementation((_req: any, res: any) => {
-    res.status(401).json({ error: 'Missing or invalid API key' });
-  });
-}
-
-describe('GET /payments/:id/receipt', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it('returns the receipt for the payer with a valid wallet signature', async () => {
-    walletAuthAs(PAYER);
-    mockedDb.getPaymentById.mockResolvedValue(basePayment as any);
-
-    const res = await request(createApp()).get(`/payments/${PAYMENT_ID}/receipt`);
-
+describe("GET /payments/:id/receipt", () => {
+  it("returns a receipt to its payer using a real Stellar signature", async () => {
+    rows([payment]);
+    const res = await request(app()).get(receiptPath).set(auth(payer, receiptPath));
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
-      id: PAYMENT_ID,
-      payer: PAYER,
-      recipient: RECIPIENT,
-      amount: '1000000',
-      asset: 'USDC',
-      status: 'completed',
-    });
-    expect(mockedDb.getPaymentById).toHaveBeenCalledWith(PAYMENT_ID);
+    expect(res.body).toEqual(payment);
   });
 
-  it('returns the receipt for the recipient with a valid publisher API key', async () => {
-    publisherAuthAs(RECIPIENT);
-    mockedDb.getPaymentById.mockResolvedValue(basePayment as any);
-
-    const res = await request(createApp())
-      .get(`/payments/${PAYMENT_ID}/receipt`)
-      .set('x-api-key', 'valid-key');
-
+  it("returns a receipt to the recipient authenticated with an API key", async () => {
+    rows([{ walletAddress: recipient.publicKey() }]);
+    rows([payment]);
+    const res = await request(app()).get(receiptPath).set("x-api-key", "publisher-key");
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ id: PAYMENT_ID, recipient: RECIPIENT });
-    expect(mockedDb.getPaymentById).toHaveBeenCalledWith(PAYMENT_ID);
+    expect(res.body).toEqual(payment);
   });
 
-  it('returns 401 when no auth is provided', async () => {
-    walletAuthMissing();
-    publisherAuthMissing();
-
-    const res = await request(createApp()).get(`/payments/${PAYMENT_ID}/receipt`);
-
+  it("rejects unauthenticated requests before querying payments", async () => {
+    const res = await request(app()).get(receiptPath);
     expect(res.status).toBe(401);
-    expect(mockedDb.getPaymentById).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when the caller is neither the payer nor the recipient', async () => {
-    walletAuthAs(OTHER);
-    mockedDb.getPaymentById.mockResolvedValue(basePayment as any);
+  it("rejects an invalid API key", async () => {
+    rows([]);
+    const res = await request(app()).get(receiptPath).set("x-api-key", "invalid-key");
+    expect(res.status).toBe(401);
+    expect(select).toHaveBeenCalledTimes(1);
+  });
 
-    const res = await request(createApp()).get(`/payments/${PAYMENT_ID}/receipt`);
-
+  it("rejects an unrelated wallet", async () => {
+    rows([payment]);
+    const res = await request(app()).get(receiptPath).set(auth(other, receiptPath));
     expect(res.status).toBe(403);
   });
 
-  it('returns 404 when the payment does not exist', async () => {
-    walletAuthAs(PAYER);
-    mockedDb.getPaymentById.mockResolvedValue(null as any);
+  it("rejects an unrelated publisher", async () => {
+    rows([{ walletAddress: other.publicKey() }]);
+    rows([payment]);
+    const res = await request(app()).get(receiptPath).set("x-api-key", "other-key");
+    expect(res.status).toBe(403);
+  });
 
-    const res = await request(createApp()).get(`/payments/unknown/receipt`);
-
+  it("returns 404 for a missing receipt", async () => {
+    rows([]);
+    const res = await request(app()).get(receiptPath).set(auth(payer, receiptPath));
     expect(res.status).toBe(404);
   });
 });
 
-describe('GET /buyers/:address/payments', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
+describe("GET /buyers/:address/payments", () => {
+  const path = `/buyers/${payer.publicKey()}/payments`;
 
-  it('returns payment history for the buyer with a valid wallet signature', async () => {
-    walletAuthAs(PAYER);
-    mockedDb.getPaymentsByBuyer.mockResolvedValue([basePayment] as any);
-
-    const res = await request(createApp()).get(`/buyers/${PAYER}/payments`);
-
+  it("returns history to the authenticated buyer", async () => {
+    rows([payment]);
+    const res = await request(app()).get(path).set(auth(payer, path));
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0]).toMatchObject({ id: PAYMENT_ID, payer: PAYER });
-    expect(mockedDb.getPaymentsByBuyer).toHaveBeenCalledWith(PAYER);
+    expect(res.body).toEqual([payment]);
   });
 
-  it('returns 401 when the wallet signature is missing', async () => {
-    walletAuthMissing();
-
-    const res = await request(createApp()).get(`/buyers/${PAYER}/payments`);
-
+  it.each(["missing", "invalid", "expired", "other-wallet", "other-path"])("rejects %s signatures", async (kind) => {
+    const headers: Record<string, string> = kind === "missing" ? {} : auth(
+      kind === "other-wallet" ? other : payer,
+      kind === "other-path" ? receiptPath : path,
+      kind === "expired" ? String(Math.floor(Date.now() / 1000) - 600) : undefined,
+    );
+    if (kind === "invalid") headers["x-wallet-signature"] = "invalid";
+    const res = await request(app()).get(path).set(headers);
     expect(res.status).toBe(401);
-    expect(mockedDb.getPaymentsByBuyer).not.toHaveBeenCalled();
-  });
-
-  it('returns 401 when the wallet signature is invalid', async () => {
-    walletAuthInvalid();
-
-    const res = await request(createApp())
-      .get(`/buyers/${PAYER}/payments`)
-      .set('x-wallet-signature', 'invalid');
-
-    expect(res.status).toBe(401);
-    expect(mockedDb.getPaymentsByBuyer).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
   });
 });

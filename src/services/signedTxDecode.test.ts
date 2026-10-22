@@ -7,7 +7,7 @@ import { decodeNewCreator, decodeSetPrice } from "./signedTxDecode.js";
 
 const PASS = "Test SDF Network ; September 2015";
 const kp = Keypair.random();
-const contractId = "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ";
+const contractId = "CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H";
 
 function build(fn: string, ...args: any[]): string {
   const tx = new TransactionBuilder(new Account(kp.publicKey(), "1"), { fee: "100", networkPassphrase: PASS })

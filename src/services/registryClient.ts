@@ -1,5 +1,6 @@
 import {
   Keypair,
+  FeeBumpTransaction,
   TransactionBuilder,
   xdr,
   Address,
@@ -55,6 +56,10 @@ export function validateSignedTx(signedXdr: string, expected: ExpectedSignedTx):
     throw new SignedTxValidationError(
       `Malformed signed transaction: ${err instanceof Error ? err.message : String(err)}`,
     );
+  }
+
+  if (tx instanceof FeeBumpTransaction) {
+    throw new SignedTxValidationError("Fee-bump transactions are not supported");
   }
 
   // Source account must be the resource owner.
@@ -282,7 +287,7 @@ export async function delistOnChain(id: string): Promise<{
         const { Transaction } = await import("@stellar/stellar-sdk");
         const stellarTx = new Transaction(xdr, NETWORK_PASSPHRASE);
         stellarTx.sign(keypair);
-        return stellarTx.toXDR();
+        return { signedTxXdr: stellarTx.toXDR() };
       },
     });
 

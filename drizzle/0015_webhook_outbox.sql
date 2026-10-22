@@ -15,8 +15,9 @@ CREATE TABLE IF NOT EXISTS "webhook_outbox" (
   "delivered_at" timestamp,
   "created_at" timestamp NOT NULL DEFAULT now()
 );
-
+--> statement-breakpoint
 -- Worker polls for pending rows ordered by next_attempt_at.
 CREATE INDEX IF NOT EXISTS "idx_webhook_outbox_status_next" ON "webhook_outbox" ("status", "next_attempt_at");
+--> statement-breakpoint
 -- Publisher delivery-history endpoint queries by publisher_id.
 CREATE INDEX IF NOT EXISTS "idx_webhook_outbox_publisher_id" ON "webhook_outbox" ("publisher_id", "created_at");

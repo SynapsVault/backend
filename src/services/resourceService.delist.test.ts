@@ -49,9 +49,10 @@ vi.mock("../lib/logger.js", () => ({
 }));
 
 // Spy on the cleanup queue so we can assert a cleanup job was enqueued.
-const enqueueCleanup = vi.fn((_path: string) => Promise.resolve());
-vi.mock("./cleanupQueue.js", () => ({
-  enqueueCleanup: (path: string) => enqueueCleanup(path),
+const enqueueCleanup = vi.fn((_job: { resourceId: string; storagePath: string }) => Promise.resolve());
+vi.mock("./workerQueue.js", () => ({
+  enqueueStorageCleanup: (job: { resourceId: string; storagePath: string }) => enqueueCleanup(job),
+  enqueueThumbnailJob: vi.fn(),
 }));
 
 import { delistResource } from "./resourceService.js";
@@ -146,7 +147,7 @@ describe("delistResource on-chain sync (#218)", () => {
     ).toBe(true);
 
     // A cleanup job was enqueued for the orphaned file.
-    expect(enqueueCleanup).toHaveBeenCalledWith("r5/file.pdf");
+    expect(enqueueCleanup).toHaveBeenCalledWith({ resourceId: "r5", storagePath: "r5/file.pdf" });
 
     // The on-chain sync still runs.
     expect(injected).toHaveBeenCalledWith("r5");

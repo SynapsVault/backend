@@ -6,7 +6,9 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "build:registry-client": "tsc -p packages/registry-client",
     "build": "tsc -p tsconfig.build.json",
+    "pretypecheck": "npm run build:registry-client",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/index.js",
     "start:prod": "NODE_ENV=production node dist/index.js",
@@ -22,6 +24,7 @@
     "e2e": "tsx scripts/e2e-test.ts",
     "reconcile": "tsx scripts/reconcile.ts",
     "seed": "tsx scripts/seed.ts",
+    "pretest": "npm run build:registry-client",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck:scripts": "tsc --ignoreConfig --noEmit --module nodenext --moduleResolution nodenext --target es2022 --strict --esModuleInterop --skipLibCheck --resolveJsonModule --types node scripts/*.ts"

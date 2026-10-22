@@ -199,6 +199,9 @@ export const payments = pgTable(
     payerAddress: text("payer_address").notNull(),
     recipientAddress: text("recipient_address").notNull(),
     amount: text("amount").notNull(), // USDC amount
+    // Set when the payment was a /verify-content fee rather than a purchase;
+    // agent earnings are summed from these rows (#99).
+    verificationId: text("verification_id").references(() => verifications.id),
     // Delivery state of the purchased content: "delivered" once the file was
     // served, "undelivered" when the download failed after payment (#86).
     deliveryStatus: text("delivery_status").notNull().default("delivered"),
@@ -245,8 +248,9 @@ export const failedEvents = pgTable(
 // even when the container is recreated without a persistent volume. The
 // on-disk file remains only as a fallback.
 export const ledgerCheckpoints = pgTable("ledger_checkpoints", {
-  // Logical name of the checkpoint (e.g. "event_listener").
-  id: text("id").primaryKey(),
+  // Registry contract the checkpoint belongs to, so switching contracts never
+  // resumes from another contract's ledger.
+  contractId: text("contract_id").primaryKey(),
   lastLedger: integer("last_ledger").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -255,23 +259,6 @@ export const ledgerCheckpoints = pgTable("ledger_checkpoints", {
 // Written whenever an admin delists a resource so the action is reviewable later.
 export const moderationEvents = pgTable(
   "moderation_events",
-// Idempotency records shared across replicas (#71).
-export const idempotencyRecords = pgTable("idempotency_records", {
-  key: text("key").primaryKey(),
-  record: jsonb("record").notNull(),
-  expiresAt: timestamp("expires_at").notNull(),
-});
-
-// Webhook outbox — persists pending deliveries so they survive restarts (#48).
-// A background worker picks them up and retries with exponential backoff.
-export const webhookOutboxStatusEnum = pgEnum("webhook_outbox_status", [
-  "pending",
-  "delivered",
-  "failed",
-]);
-
-export const webhookOutbox = pgTable(
-  "webhook_outbox",
   {
     id: text("id")
       .primaryKey()
@@ -291,6 +278,24 @@ export const webhookOutbox = pgTable(
   (table) => ({
     // Fast lookup of all moderation events for a given resource.
     resourceIdIdx: index("idx_moderation_events_resource_id").on(table.resourceId),
+  }),
+);
+
+// Idempotency records shared across replicas (#71).
+export const idempotencyRecords = pgTable("idempotency_records", {
+  key: text("key").primaryKey(),
+  record: jsonb("record").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
+// Webhook outbox — persists pending deliveries so they survive restarts (#48).
+// A background worker picks them up and retries with exponential backoff.
+export const webhookOutbox = pgTable(
+  "webhook_outbox",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => createId()),
     publisherId: text("publisher_id")
       .notNull()
       .references(() => publishers.id),

@@ -27,7 +27,7 @@ import {
   delistResource,
   getResourceById,
 } from "../services/resourceService.js";
-import { downloadFile, StorageObjectNotFoundError } from "../storage/supabaseStorage.js";
+import { downloadFile, StorageNotFoundError } from "../storage/supabaseStorage.js";
 import { db } from "../db/client.js";
 import { payments, resources } from "../db/schema.js";
 import { and, eq, inArray } from "drizzle-orm";
@@ -42,7 +42,7 @@ import { getRequestSignal } from "../lib/requestAbort.js";
 import { buildRegistrationFailureGuidance, explorerTxUrl } from "../lib/registrationGuidance.js";
 import {
   NETWORK_PASSPHRASE,
-  REGISTRY_CONTRACT_ID,
+  SignedTxValidationError,
   registryClient,
   registryKeypair,
   setPrice,
@@ -50,12 +50,28 @@ import {
   buildRegisterTx,
   submitSignedTx,
   validateSignedTx,
+  type ExpectedSignedTx,
 } from "../services/registryClient.js";
 import { parsePayerFromXPayment } from "../lib/parseXPayment.js";
+import { recordSettlementOnFinish } from "../lib/paymentSettlement.js";
 import { AppError, isAppError } from "../lib/errors.js";
 import { emitToPublisher, enqueueWebhookEvent } from "../services/webhookService.js";
 
 const router: RouterType = Router();
+
+/** Rejects (400) a signed XDR that doesn't invoke the expected registry call. */
+function assertSignedTx(signedXdr: string, expected: ExpectedSignedTx): void {
+  try {
+    validateSignedTx(signedXdr, expected);
+  } catch (err) {
+    if (err instanceof SignedTxValidationError) {
+      throw new AppError("VALIDATION_ERROR", "Signed transaction does not match this resource", {
+        detail: err.message,
+      });
+    }
+    throw err;
+  }
+}
 
 // Best-effort removal of a multer disk-stored temp file. Never throws.
 async function cleanupTempFile(path: string | undefined): Promise<void> {
@@ -293,14 +309,14 @@ router.get("/resources/:id/thumbnail", async (req, res) => {
     // Only a genuinely missing object is a 404. Any other storage failure is an
     // outage and must surface as 503 so clients and monitoring can tell the
     // difference (#91).
-    if (err instanceof StorageObjectNotFoundError) {
+    if (err instanceof StorageNotFoundError) {
       throw new AppError("NOT_FOUND", "Thumbnail not found");
     }
     getLogger().error(
       { err, event: "thumbnail_storage_error", resourceId: resource.id },
       "thumbnail storage download failed",
     );
-    throw new AppError("STORAGE_UNAVAILABLE", "Thumbnail storage is temporarily unavailable", undefined, {
+    throw new AppError("SERVICE_UNAVAILABLE", "Thumbnail storage is temporarily unavailable", undefined, {
       cause: err,
     });
   }
@@ -338,6 +354,8 @@ router.get("/resources/:id", dynamicPaywall, async (req, res) => {
         deliveryStatus,
       })
       .returning();
+    // Starts pending; flips to settled/failed once x402 settles (#99).
+    recordSettlementOnFinish(res, payment.id);
     return payment;
   };
 
@@ -567,26 +585,17 @@ router.post(
     try {
       if (signedXdr) {
         // New flow: verify the signed XDR targets this resource, then submit.
-        const expected = {
-          contractId: REGISTRY_CONTRACT_ID,
+        const expected: ExpectedSignedTx = {
           functionName: "register",
           resourceId,
           owner: resource.walletAddress,
         };
-        const validation = validateSignedTx(signedXdr, expected);
-        if (!validation.ok) {
-          await db
-            .update(resources)
-            .set({ onchainStatus: "failed" })
-            .where(eq(resources.id, resourceId));
-          throw new AppError("VALIDATION_ERROR", "Signed transaction does not match this resource", {
-            detail: validation.reason,
-          });
-        }
+        // A mismatch throws; the catch below marks the resource failed.
+        assertSignedTx(signedXdr, expected);
 
         const result = await submitSignedTx(signedXdr, expected);
 
-        if (result.status === "confirmed") {
+        if (result.state === "confirmed") {
           getLogger().info(
             {
               event: "onchain_register",
@@ -607,7 +616,7 @@ router.post(
             onchainStatus: updated.onchainStatus,
             txHash: result.txHash,
           });
-        } else if (result.status === "pending") {
+        } else if (result.state === "pending") {
           // Still in flight — leave the resource pending so the worker can
           // resolve it by hash (#77). Do not mark it failed on timeout.
           getLogger().info(
@@ -670,7 +679,8 @@ router.post(
             }),
             tags: [],
           },
-          { simulate: false },
+          // signAndSend needs a simulated (footprinted) transaction.
+          { simulate: true },
         );
 
         const sentTx = await tx.signAndSend({
@@ -678,7 +688,7 @@ router.post(
             const { Transaction } = await import("@stellar/stellar-sdk");
             const stellarTx = new Transaction(xdr, NETWORK_PASSPHRASE);
             stellarTx.sign(registryKeypair);
-            return stellarTx.toXDR();
+            return { signedTxXdr: stellarTx.toXDR() };
           },
         });
 
@@ -785,32 +795,26 @@ router.post(
 
     const { signedXdr, price } = req.body;
 
-    const expected = {
-      contractId: REGISTRY_CONTRACT_ID,
+    const expected: ExpectedSignedTx = {
       functionName: "set_price",
       resourceId,
       owner: resource.walletAddress,
     };
-    const validation = validateSignedTx(signedXdr, expected);
-    if (!validation.ok) {
-      throw new AppError("VALIDATION_ERROR", "Signed transaction does not match this resource", {
-        detail: validation.reason,
-      });
-    }
+    assertSignedTx(signedXdr, expected);
 
     // Take the price from the signed operation; reject a body that disagrees (#74).
     const onChainPrice = decodeSetPrice(signedXdr, price);
 
     const result = await submitSignedTx(signedXdr, expected);
 
-    if (result.status === "failed") {
+    if (result.state === "failed") {
       throw new AppError("UPSTREAM_ERROR", "Transaction failed on-chain", {
         detail: result.error,
         txHash: result.txHash || undefined,
       });
     }
 
-    if (result.status === "pending") {
+    if (result.state === "pending") {
       // Still in flight — return the hash so the client can poll status.
       res.status(202).json({ id: resourceId, txHash: result.txHash, status: "pending" });
       return;
@@ -872,32 +876,26 @@ router.post(
 
     const { signedXdr, newCreator } = req.body;
 
-    const expected = {
-      contractId: REGISTRY_CONTRACT_ID,
+    const expected: ExpectedSignedTx = {
       functionName: "transfer_ownership",
       resourceId,
       owner: resource.walletAddress,
     };
-    const validation = validateSignedTx(signedXdr, expected);
-    if (!validation.ok) {
-      throw new AppError("VALIDATION_ERROR", "Signed transaction does not match this resource", {
-        detail: validation.reason,
-      });
-    }
+    assertSignedTx(signedXdr, expected);
 
     // Take the new owner from the signed operation; reject a mismatch (#74).
     const onChainCreator = decodeNewCreator(signedXdr, newCreator);
 
     const result = await submitSignedTx(signedXdr, expected);
 
-    if (result.status === "failed") {
+    if (result.state === "failed") {
       throw new AppError("UPSTREAM_ERROR", "Transaction failed on-chain", {
         detail: result.error,
         txHash: result.txHash || undefined,
       });
     }
 
-    if (result.status === "pending") {
+    if (result.state === "pending") {
       // Still in flight — return the hash so the client can poll status.
       res.status(202).json({ id: resourceId, txHash: result.txHash, status: "pending" });
       return;

@@ -8,14 +8,23 @@ import { envSchema, CONFIG_KEYS } from './config.js';
  * by the zod `envSchema`. These are documented extras (e.g. consumed by other
  * tooling or reserved for future use).
  */
-const ALLOWED_NON_VALIDATED_EXTRAS: string[] = [];
+const ALLOWED_NON_VALIDATED_EXTRAS: string[] = [
+  'POSTGRES_PASSWORD', // docker-compose only
+  'OTEL_EXPORTER_OTLP_ENDPOINT', // read directly by src/tracing.ts
+  'OTEL_SERVICE_NAME', // read directly by src/tracing.ts
+  'LEDGER_TRACKER_PATH', // read directly by src/workers/eventListener.ts
+];
 
 function parseExampleKeys(content: string): string[] {
   const keys: string[] = [];
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (line === '' || line.startsWith('#')) continue;
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
+    if (line === '') continue;
+    // Commented-out placeholders (`# SIGNING_SECRET_KEY=`) document optional
+    // keys; prose comments never end right after a bare KEY=value token.
+    const match = line.startsWith('#')
+      ? /^#\s?([A-Z][A-Z0-9_]*)=\S*$/.exec(line)
+      : /^([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
     if (match) {
       keys.push(match[1]);
     }
@@ -29,13 +38,15 @@ const MANAGED_KEYS = [
   'NODE_ENV',
   'PORT',
   'BASE_URL',
+  'WEB_APP_URL',
+  'SIGNING_SECRET_KEY',
   'STELLAR_NETWORK',
   'NETWORK',
   'SOROBAN_RPC_URL',
   'USDC_CONTRACT_ID',
   'MAX_FILE_SIZE_MB',
-  'RATE_LIMIT_WINDOW_MS',
-  'RATE_LIMIT_MAX_REQUESTS',
+  'RATE_LIMIT_VERIFY_IP_WINDOW_MS',
+  'RATE_LIMIT_VERIFY_IP_MAX',
   'REQUIRE_REQUEST_SIGNATURE',
   'PAY_TO',
   'AGENT_SECRET_KEY',
@@ -49,9 +60,11 @@ const MANAGED_KEYS = [
   'OPENROUTER_API_KEY',
 ];
 
-const VALID_STELLAR_SECRET = 'S' + 'A'.repeat(55);
-const VALID_STELLAR_PUBLIC = 'G' + 'A'.repeat(55);
-const VALID_CONTRACT_ID = 'C' + 'A'.repeat(55);
+// Throwaway, unfunded testnet keys (same placeholders as src/test/setupEnv.ts);
+// they must carry valid StrKey checksums or the schema rejects them.
+const VALID_STELLAR_SECRET = 'SDUGOO2E42N3DECYVMUHGZWZ7P2FXUPLAHC2UEJ477CMF47CBU23BWMS';
+const VALID_STELLAR_PUBLIC = 'GDEJJLXV2CNHF5HEGX34MU4G6L4PRVUAGD4ANF77ZDYTQJKSDSDYVVI6';
+const VALID_CONTRACT_ID = 'CBQEIMSRPSRKJJHGOELZTP3CISZVHZ6WPKZTWJMYZXHFXPGHHWFQBD4H';
 
 let savedEnv: EnvSnapshot;
 
@@ -191,25 +204,25 @@ describe('config defaults', () => {
     setEnv(baseValidEnv());
     const { config } = await loadConfig();
 
-    expect(config.PORT).toBe(3000);
-    expect(config.BASE_URL).toBe('http://localhost:3000');
+    expect(config.PORT).toBe(4021);
+    expect(config.BASE_URL).toBe('http://localhost:4021');
     expect(config.STELLAR_NETWORK).toBe('testnet');
-    expect(config.MAX_FILE_SIZE_MB).toBe(10);
+    expect(config.MAX_FILE_SIZE_MB).toBe(50);
   });
 
   it('applies default rate-limit settings', async () => {
     setEnv(baseValidEnv());
     const { config } = await loadConfig();
 
-    expect(config.RATE_LIMIT_WINDOW_MS).toBeGreaterThan(0);
-    expect(config.RATE_LIMIT_MAX_REQUESTS).toBeGreaterThan(0);
+    expect(config.RATE_LIMIT_VERIFY_IP_WINDOW_MS).toBeGreaterThan(0);
+    expect(config.RATE_LIMIT_VERIFY_IP_MAX).toBeGreaterThan(0);
   });
 
   it('applies testnet presets for NETWORK, SOROBAN_RPC_URL and USDC_CONTRACT_ID', async () => {
     setEnv(baseValidEnv({ STELLAR_NETWORK: 'testnet' }));
     const { config } = await loadConfig();
 
-    expect(config.NETWORK).toBe('testnet');
+    expect(config.NETWORK).toBe('stellar:testnet');
     expect(config.SOROBAN_RPC_URL).toContain('testnet');
     expect(config.USDC_CONTRACT_ID).toBeTruthy();
   });
@@ -218,8 +231,8 @@ describe('config defaults', () => {
     setEnv(baseValidEnv({ STELLAR_NETWORK: 'mainnet' }));
     const { config } = await loadConfig();
 
-    expect(config.NETWORK).toBe('mainnet');
-    expect(config.SOROBAN_RPC_URL).toContain('mainnet');
+    expect(config.NETWORK).toBe('stellar:pubnet');
+    expect(config.SOROBAN_RPC_URL).toBe('https://soroban.stellar.org');
     expect(config.USDC_CONTRACT_ID).toBeTruthy();
   });
 
@@ -229,8 +242,8 @@ describe('config defaults', () => {
         PORT: '8080',
         BASE_URL: 'https://api.example.com',
         MAX_FILE_SIZE_MB: '25',
-        RATE_LIMIT_WINDOW_MS: '60000',
-        RATE_LIMIT_MAX_REQUESTS: '42',
+        RATE_LIMIT_VERIFY_IP_WINDOW_MS: '60000',
+        RATE_LIMIT_VERIFY_IP_MAX: '42',
       }),
     );
     const { config } = await loadConfig();
@@ -238,8 +251,8 @@ describe('config defaults', () => {
     expect(config.PORT).toBe(8080);
     expect(config.BASE_URL).toBe('https://api.example.com');
     expect(config.MAX_FILE_SIZE_MB).toBe(25);
-    expect(config.RATE_LIMIT_WINDOW_MS).toBe(60000);
-    expect(config.RATE_LIMIT_MAX_REQUESTS).toBe(42);
+    expect(config.RATE_LIMIT_VERIFY_IP_WINDOW_MS).toBe(60000);
+    expect(config.RATE_LIMIT_VERIFY_IP_MAX).toBe(42);
   });
 });
 
@@ -248,7 +261,8 @@ describe('envFlag parsing for REQUIRE_REQUEST_SIGNATURE', () => {
   const falsy = ['false', '0', 'no', ''];
 
   it.each(truthy)('parses %s as true', async (value) => {
-    setEnv(baseValidEnv({ REQUIRE_REQUEST_SIGNATURE: value }));
+    // SIGNING_SECRET_KEY is mandatory whenever signatures are required.
+    setEnv(baseValidEnv({ REQUIRE_REQUEST_SIGNATURE: value, SIGNING_SECRET_KEY: 'x'.repeat(32) }));
     const { config } = await loadConfig();
     expect(config.REQUIRE_REQUEST_SIGNATURE).toBe(true);
   });
@@ -329,7 +343,7 @@ describe('network checks', () => {
     setEnv(
       baseValidEnv({
         STELLAR_NETWORK: 'testnet',
-        SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
+        SOROBAN_RPC_URL: 'https://soroban.stellar.org',
       }),
     );
     const { message } = await loadConfigExpectingFailure();
@@ -346,7 +360,6 @@ describe('network checks', () => {
     setEnv(
       baseValidEnv({
         STELLAR_NETWORK: 'testnet',
-        NETWORK: 'testnet',
         SOROBAN_RPC_URL: 'https://rpc.example.com',
       }),
     );
@@ -363,7 +376,15 @@ describe('production-only checks', () => {
   });
 
   it('applies production-specific validation when NODE_ENV=production', async () => {
-    setEnv(baseValidEnv({ NODE_ENV: 'production' }));
+    setEnv(
+      baseValidEnv({
+        NODE_ENV: 'production',
+        BASE_URL: 'https://api.example.com',
+        WEB_APP_URL: 'https://app.example.com',
+        // Signatures default to required in production.
+        SIGNING_SECRET_KEY: 'x'.repeat(32),
+      }),
+    );
     const { config } = await loadConfig();
     expect(config).toBeDefined();
   });
@@ -394,7 +415,7 @@ describe('applyNetworkEnvDefaults behaviors', () => {
     const { config } = await loadConfig();
 
     expect(config.STELLAR_NETWORK).toBe('testnet');
-    expect(config.NETWORK).toBe('testnet');
+    expect(config.NETWORK).toBe('stellar:testnet');
     expect(config.SOROBAN_RPC_URL).toBeTruthy();
     expect(config.USDC_CONTRACT_ID).toBeTruthy();
   });

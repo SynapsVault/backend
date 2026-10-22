@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response, type Router as RouterType } from "express";
 import { paymentMiddleware } from "@x402/express";
 import type { RoutesConfig } from "@x402/core/server";
-import { and, eq, desc, inArray, isNull, sum, sql } from "drizzle-orm";
+import { and, eq, desc, inArray, isNotNull, isNull, sum, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { resources, verifications, payments } from "../db/schema.js";
 import { checkOriginality } from "../services/verificationService.js";
@@ -17,6 +17,8 @@ import { verifyIpRateLimit, verifyWalletRateLimit } from "../middleware/rateLimi
 import { validate } from "../middleware/validate.js";
 import { verifyContentSchema } from "../schemas/requests.js";
 import { hashFileResource, hashLinkResource } from "../utils/crypto.js";
+import { parsePayerFromXPayment } from "../lib/parseXPayment.js";
+import { recordSettlementOnFinish } from "../lib/paymentSettlement.js";
 
 const router: RouterType = Router();
 
@@ -150,6 +152,23 @@ router.post(
         })
         .returning();
 
+      // Record the verification fee so agent earnings come from settled
+      // payments rather than count × price (#99).
+      const paymentHeader = req.headers["x-payment"];
+      const payer =
+        typeof paymentHeader === "string" ? parsePayerFromXPayment(paymentHeader).payer : undefined;
+      const [payment] = await db
+        .insert(payments)
+        .values({
+          resourceId,
+          verificationId: verification.id,
+          payerAddress: payer ?? "unknown",
+          recipientAddress: config.PAY_TO,
+          amount: config.VERIFICATION_PRICE,
+        })
+        .returning({ id: payments.id });
+      recordSettlementOnFinish(res, payment.id);
+
       // Update resource status — listing is independent of on-chain registration.
       // Re-checks ownership and the admin delist so a change made since the
       // pre-payment check can't be overwritten. A listing only goes live when
@@ -238,20 +257,20 @@ router.get("/agent/status", async (_req, res) => {
   const verified = Number(aggregates?.verified ?? 0);
   const rejected = Number(aggregates?.rejected ?? 0);
 
-  // Sum the amounts actually recorded for settled verification payments to the
-  // agent's wallet. Rejected or unsettled calls are excluded, and historical
-  // price changes are reflected because we sum recorded amounts, not list price.
+  // Sum the amounts actually recorded for settled verification fees paid to
+  // the agent's wallet (#99). Failed or unsettled payments are excluded, and
+  // historical price changes are reflected because we sum recorded amounts,
+  // not list price. The fee is earned whatever the verdict.
   const [earningsRow] = await db
     .select({
       total: sum(sql<string>`cast(${payments.amount} as numeric)`),
     })
     .from(payments)
-    .innerJoin(verifications, eq(payments.verificationId, verifications.id))
     .where(
       and(
+        isNotNull(payments.verificationId),
         eq(payments.recipientAddress, config.PAY_TO),
         eq(payments.status, "settled"),
-        eq(verifications.isOriginal, true),
       ),
     );
 

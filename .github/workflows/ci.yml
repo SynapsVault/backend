@@ -40,7 +40,7 @@ jobs:
         run: npm test
 
       - name: Build
-        run: npx tsc -p packages/registry-client && npm run build
+        run: npm run build:registry-client && npm run build
 
   docker:
     name: Docker build & smoke test

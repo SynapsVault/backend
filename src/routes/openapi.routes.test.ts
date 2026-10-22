@@ -12,6 +12,7 @@ const EXCLUDED_ROUTES = new Set<string>([
   '/docs',
   '/docs/json',
   '/metrics',
+  '/debug/db', // internal, gated by ENABLE_DEBUG_ROUTES + admin key
 ]);
 
 interface RouteEntry {
@@ -138,7 +139,7 @@ describe('OpenAPI spec matches registered routes', () => {
   const registeredRoutes = collectRoutes(app).filter(
     (route) => !EXCLUDED_ROUTES.has(route.path),
   );
-  const specRoutes = collectSpecRoutes();
+  const specRoutes = collectSpecRoutes().filter((route) => !EXCLUDED_ROUTES.has(route.path));
 
   const registeredKeys = new Set(registeredRoutes.map(routeKey));
   const specKeys = new Set(specRoutes.map(routeKey));

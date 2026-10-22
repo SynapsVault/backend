@@ -107,15 +107,12 @@ describe("dynamicPaywall middleware", () => {
     const res = createResponse();
     const next = createNext();
 
-    await dynamicPaywall(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(404);
-    expect(res.json).toHaveBeenCalledWith({
-      error: "Resource not found",
-      code: "RESOURCE_NOT_FOUND",
-      requestId: "test-request-id",
+    // Errors are thrown as AppError and rendered by the global errorHandler.
+    await expect(dynamicPaywall(req, res, next)).rejects.toMatchObject({
+      status: 404,
+      code: "NOT_FOUND",
+      message: "Resource not found",
     });
-    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -136,15 +133,11 @@ describe("dynamicPaywall middleware", () => {
     const res = createResponse();
     const next = createNext();
 
-    await dynamicPaywall(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(404);
-    expect(res.json).toHaveBeenCalledWith({
-      error: "Resource not listed",
-      code: "RESOURCE_NOT_FOUND",
-      requestId: "test-request-id",
+    await expect(dynamicPaywall(req, res, next)).rejects.toMatchObject({
+      status: 404,
+      code: "NOT_FOUND",
+      message: "Resource not listed",
     });
-    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -163,17 +156,12 @@ describe("dynamicPaywall middleware", () => {
     const res = createResponse();
     const next = createNext();
 
-    await dynamicPaywall(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(503);
-    expect(res.json).toHaveBeenCalledWith({
-      error: "chain_unavailable",
-      code: "CHAIN_UNAVAILABLE",
-      requestId: "test-request-id",
+    await expect(dynamicPaywall(req, res, next)).rejects.toMatchObject({
+      status: 503,
+      code: "SERVICE_UNAVAILABLE",
       message: "Unable to verify resource price. Please try again later.",
-      resourceId: "r2",
+      details: { resourceId: "r2" },
     });
-    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -191,18 +179,11 @@ describe("dynamicPaywall middleware", () => {
     const res = createResponse();
     const next = createNext();
 
-    await dynamicPaywall(req, res, next);
-
-    expect(res.status).toHaveBeenCalledWith(503);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: "chain_unavailable",
-        code: "CHAIN_UNAVAILABLE",
-        requestId: "test-request-id",
-        resourceId: "r-missing",
-      }),
-    );
-    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
+    await expect(dynamicPaywall(req, res, next)).rejects.toMatchObject({
+      status: 503,
+      code: "SERVICE_UNAVAILABLE",
+      details: { resourceId: "r-missing" },
+    });
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -219,19 +200,14 @@ describe("dynamicPaywall middleware", () => {
     const res = createResponse();
     const next = createNext();
 
-    await dynamicPaywall(req, res, next);
-
-    expect(mockNormalizeUsdcPrice).toHaveBeenCalledWith("1.00");
-    expect(res.status).toHaveBeenCalledWith(409);
-    expect(res.json).toHaveBeenCalledWith({
-      error: "price_mismatch",
-      code: "PRICE_MISMATCH",
-      requestId: "test-request-id",
+    await expect(dynamicPaywall(req, res, next)).rejects.toMatchObject({
+      status: 409,
+      code: "CONFLICT",
       message:
         "Resource price is temporarily unavailable due to a configuration issue. Please try again later.",
-      resourceId: "r3",
+      details: { resourceId: "r3" },
     });
-    expect(res.json.mock.calls[0][0]).toMatchSnapshot();
+    expect(mockNormalizeUsdcPrice).toHaveBeenCalledWith("1.00");
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -263,7 +239,8 @@ describe("dynamicPaywall middleware", () => {
     const { dynamicPaywall } = await import("./dynamicPaywall.js");
     (db as any).select = dbMock.select;
 
-    mockGetOnChainPrice.mockResolvedValue({ price: "1", creator: "GABC" });
+    // getOnChainPrice has already converted the 1-stroop on-chain value.
+    mockGetOnChainPrice.mockResolvedValue({ price: "0.0000001", creator: "GABC" });
     mockNormalizeUsdcPrice.mockReturnValue("0.0000001");
     mockPaymentMiddleware.mockReturnValue((_req, _res, next) => next());
 
@@ -274,14 +251,16 @@ describe("dynamicPaywall middleware", () => {
     await dynamicPaywall(req, res, next);
 
     expect(mockPaymentMiddleware).toHaveBeenCalled();
-    const routes = mockPaymentMiddleware.mock.calls[0][0] as Record<string, any>;
-    const route = routes["GET /api/resources/:id"];
+    const routes = (mockPaymentMiddleware.mock.calls[0] as unknown[])[0] as Record<string, any>;
+    const route = routes["GET /resources/r-stroop"];
     expect(route).toBeDefined();
-    expect(route.accepts[0].price).toBe("0.0000001");
+    expect(route.accepts.price).toBe("0.0000001");
     expect(next).toHaveBeenCalled();
   });
 
-  it("performs one RPC lookup per resource per TTL window", async () => {
+  // The per-TTL RPC dedupe lives in getOnChainPrice (see stellarRegistry.test.ts);
+  // here we check the middleware reuses its own payment middleware instance.
+  it("reuses the payment middleware for a resource within the TTL window", async () => {
     const resource = listedResource({ id: "r-ttl", price: "0.50", onchainStatus: "none" });
     const dbMock = makeDbSelect(resource);
     const { db } = await import("../db/client.js");
@@ -295,7 +274,7 @@ describe("dynamicPaywall middleware", () => {
     await dynamicPaywall(createRequest("r-ttl"), createResponse(), createNext());
     await dynamicPaywall(createRequest("r-ttl"), createResponse(), createNext());
 
-    expect(mockGetOnChainPrice).toHaveBeenCalledTimes(1);
+    expect(mockPaymentMiddleware).toHaveBeenCalledTimes(1);
   });
 
   it("evicts expired middleware cache entries after the TTL", async () => {
@@ -306,6 +285,7 @@ describe("dynamicPaywall middleware", () => {
       const { db } = await import("../db/client.js");
       const { dynamicPaywall, middlewareCache } = await import("./dynamicPaywall.js");
       (db as any).select = dbMock.select;
+      middlewareCache.clear();
 
       mockGetOnChainPrice.mockResolvedValue({ price: "0.5000000", creator: "GABC" });
       mockNormalizeUsdcPrice.mockReturnValue("0.5000000");

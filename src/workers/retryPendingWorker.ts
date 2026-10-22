@@ -1,4 +1,4 @@
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, asc, eq, like, lt, sql } from "drizzle-orm";
 import sharp from "sharp";
 import { db } from "../db/client.js";
 import { resources, pendingCleanup } from "../db/schema.js";
@@ -9,7 +9,8 @@ import {
   registryKeypair,
   resourceExists,
 } from "../services/registryClient.js";
-import { deleteFile, downloadFile, uploadFile } from "../services/storageService.js";
+import { deleteFile, downloadFile, uploadFile } from "../storage/supabaseStorage.js";
+import { MAX_THUMBNAIL_PIXELS } from "../lib/uploadValidation.js";
 import { config } from "../config.js";
 import { getLogger } from "../lib/logger.js";
 
@@ -17,22 +18,6 @@ const WORKER_INTERVAL_MS = 60_000;
 const MAX_RETRY_ATTEMPTS = 3;
 const MAX_CLEANUP_ATTEMPTS = 5;
 const THUMBNAIL_WIDTH = 320;
-
-const retryCounts = new Map<string, number>();
-
-export async function enqueueCleanup(storagePath: string, reason?: string): Promise<void> {
-  await db.insert(pendingCleanup).values({
-    storagePath,
-    reason: reason ?? null,
-  });
-}
-
-export async function enqueueThumbnail(resourceId: string): Promise<void> {
-  await db
-    .update(resources)
-    .set({ thumbnailPending: true })
-    .where(eq(resources.id, resourceId));
-}
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let inFlight = false;
@@ -65,6 +50,17 @@ async function tick(): Promise<void> {
 
   inFlight = true;
   try {
+    // Each pass handles its own errors, so one failing never starves the others.
+    await processStuckRegistrations();
+    await processCleanupJobs();
+    await processThumbnailJobs();
+  } finally {
+    inFlight = false;
+  }
+}
+
+async function processStuckRegistrations(): Promise<void> {
+  try {
     const cutoff = sql`NOW() - INTERVAL '5 minutes'`;
 
     const stuck = await db
@@ -86,20 +82,20 @@ async function tick(): Promise<void> {
     );
 
     for (const resource of stuck) {
-      await withTimeout(
-        retryResource(resource),
-        config.RETRY_WORKER_ITEM_TIMEOUT_MS,
-        resource.id,
-      );
+      try {
+        await withTimeout(
+          retryResource(resource),
+          config.RETRY_WORKER_ITEM_TIMEOUT_MS,
+          resource.id,
+        );
+      } catch (err) {
+        // A timed-out item must not abort the rest of the batch.
+        getLogger().error({ event: "retry_worker_item_error", resourceId: resource.id, err }, "retry item failed");
+      }
     }
   } catch (err) {
     getLogger().error({ event: "retry_worker_tick_error", err }, "retry worker tick failed");
-  } finally {
-    inFlight = false;
   }
-
-  await processCleanupJobs();
-  await processThumbnailJobs();
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, resourceId: string): Promise<T> {
@@ -122,7 +118,11 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, resourceId: strin
 async function processCleanupJobs(): Promise<void> {
   const log = getLogger();
   try {
-    const jobs = await db.select().from(pendingCleanup);
+    const jobs = await db
+      .select()
+      .from(pendingCleanup)
+      .orderBy(asc(pendingCleanup.createdAt))
+      .limit(config.RETRY_WORKER_BATCH_SIZE);
 
     for (const job of jobs) {
       try {
@@ -175,24 +175,27 @@ async function processThumbnailJobs(): Promise<void> {
     const pending = await db
       .select()
       .from(resources)
-      .where(and(eq(resources.thumbnailPending, true), sql`${resources.mimeType} LIKE 'image/%'`));
+      .where(and(eq(resources.thumbnailStatus, "pending"), like(resources.mimeType, "image/%")))
+      .limit(config.RETRY_WORKER_BATCH_SIZE);
 
     for (const resource of pending) {
       const rlog = log.child({ resourceId: resource.id });
       try {
+        if (!resource.storagePath) throw new Error("resource has no stored file");
         const original = await downloadFile(resource.storagePath);
-        const thumbnail = await sharp(original, {
-          limitInputPixels: config.MAX_THUMBNAIL_PIXELS,
-        })
+        // limitInputPixels rejects decompression bombs before decoding (#89).
+        const thumbnail = await sharp(original.buffer, { limitInputPixels: MAX_THUMBNAIL_PIXELS })
           .resize({ width: THUMBNAIL_WIDTH, withoutEnlargement: true })
+          .jpeg()
           .toBuffer();
 
-        const thumbnailPath = `${resource.storagePath}.thumb.jpg`;
-        await uploadFile(thumbnailPath, thumbnail, "image/jpeg");
+        // Must match the path GET /resources/:id/thumbnail reads.
+        const filename = resource.storagePath.split("/").pop();
+        const thumbnailPath = await uploadFile(resource.id, thumbnail, `thumb_${filename}`, "image/jpeg");
 
         await db
           .update(resources)
-          .set({ thumbnailPath, thumbnailPending: false })
+          .set({ thumbnailPath, thumbnailStatus: "ready" })
           .where(eq(resources.id, resource.id));
 
         rlog.info(
@@ -202,7 +205,7 @@ async function processThumbnailJobs(): Promise<void> {
       } catch (err: any) {
         await db
           .update(resources)
-          .set({ thumbnailPending: false })
+          .set({ thumbnailStatus: "failed" })
           .where(eq(resources.id, resource.id));
         rlog.error(
           { event: "thumbnail_failed", err: err?.message ?? String(err) },
@@ -238,12 +241,15 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
         .update(resources)
         .set({ onchainStatus: "failed" })
         .where(eq(resources.id, resource.id));
-      retryCounts.delete(resource.id);
       return;
     }
 
     if (resource.onchainTxHash) {
-      const status = await pollTransactionStatus(resource.onchainTxHash);
+      // One immediate lookup; the next tick re-checks if it's still pending.
+      const { status } = await pollTransactionStatus(resource.onchainTxHash, {
+        maxAttempts: 1,
+        intervalMs: 0,
+      });
 
       if (status === "PENDING") {
         log.info(
@@ -258,7 +264,6 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
           .update(resources)
           .set({ onchainStatus: "registered" })
           .where(eq(resources.id, resource.id));
-        retryCounts.delete(resource.id);
         log.info(
           { event: "retry_confirmed", txHash: resource.onchainTxHash },
           "stored transaction confirmed; marking resource registered",
@@ -270,7 +275,6 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
         .update(resources)
         .set({ onchainStatus: "failed" })
         .where(eq(resources.id, resource.id));
-      retryCounts.delete(resource.id);
       log.warn(
         { event: "retry_tx_failed", txHash: resource.onchainTxHash },
         "stored transaction failed on-chain; marking resource failed",
@@ -291,18 +295,20 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
       return;
     }
 
-    // Never register under a creator other than the resource's wallet address.
-    // If the creator must sign, we cannot do it server-side; flag it for the client.
-    if (!resource.walletAddress) {
+    // Never register under a creator other than the resource's wallet address,
+    // and the server can only sign for its own registry key. Any other creator
+    // must sign client-side: mark it failed so the owner can resubmit a signed
+    // XDR via POST /resources/:id/register (failed is retryable there).
+    const creator = resource.walletAddress;
+    if (creator !== registryKeypair.publicKey()) {
       log.warn(
-        { event: "retry_missing_wallet_address" },
-        "resource has no walletAddress; cannot register on-chain",
+        { event: "retry_needs_client_signature" },
+        "registration requires the creator's signature; marking failed for client resubmission",
       );
       await db
         .update(resources)
-        .set({ onchainStatus: "needs_client_signature" })
+        .set({ onchainStatus: "failed" })
         .where(eq(resources.id, resource.id));
-      retryCounts.delete(resource.id);
       return;
     }
 
@@ -317,20 +323,6 @@ async function retryResource(resource: typeof resources.$inferSelect): Promise<v
       description: resource.description ?? "",
       contentHash: resource.contentHash,
     });
-
-    const creator = resource.walletAddress;
-    if (creator !== resource.walletAddress) {
-      log.warn(
-        { event: "retry_creator_mismatch" },
-        "creator differs from walletAddress; marking as needing client signature",
-      );
-      await db
-        .update(resources)
-        .set({ onchainStatus: "needs_client_signature" })
-        .where(eq(resources.id, resource.id));
-      retryCounts.delete(resource.id);
-      return;
-    }
 
     const tx = await registryClient.register({
       creator,

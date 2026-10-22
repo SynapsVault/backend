@@ -1,1 +1,1 @@
-ALTER TABLE "resources" ADD COLUMN "onchain_pending_since" timestamp;
+ALTER TABLE "resources" ADD COLUMN IF NOT EXISTS "onchain_pending_since" timestamp;

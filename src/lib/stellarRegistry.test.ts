@@ -1,13 +1,11 @@
-I need to see the current content of `src/lib/stellarRegistry.ts` to write accurate tests. However, since only the test file is being created, I'll write tests based on the described API surface (options `cache`, `now`, `ttlMs`, `fetcher`; functions `stroopsToUsdc`, `normalizeUsdcPrice`; error `OnChainLookupError`; `createCache()`).
-
-```typescript
 import { describe, it, expect, vi } from "vitest";
 import {
   createCache,
   stroopsToUsdc,
   normalizeUsdcPrice,
+  getOnChainPrice,
   OnChainLookupError,
-} from "./stellarRegistry";
+} from "./stellarRegistry.js";
 
 describe("stroopsToUsdc", () => {
   it("converts 1 stroop to 0.0000001", () => {
@@ -60,17 +58,17 @@ describe("normalizeUsdcPrice", () => {
 describe("price lookup cache TTL", () => {
   it("returns cached result within TTL without invoking the fetcher", async () => {
     const cache = createCache();
-    const fetcher = vi.fn().mockResolvedValue("1.0000000");
+    const fetcher = vi.fn().mockResolvedValue({ price: 10_000_000n, creator: "GCREATOR" });
     let currentTime = 1_000;
     const now = () => currentTime;
     const ttlMs = 5_000;
 
-    const first = await lookupPrice({ cache, now, ttlMs, fetcher });
+    const first = await getOnChainPrice("res-1", { cache, now, ttlMs, fetcher });
     expect(first.cached).toBe(false);
     expect(fetcher).toHaveBeenCalledTimes(1);
 
     currentTime += 1_000; // still within TTL
-    const second = await lookupPrice({ cache, now, ttlMs, fetcher });
+    const second = await getOnChainPrice("res-1", { cache, now, ttlMs, fetcher });
     expect(second.cached).toBe(true);
     expect(second.price).toBe("1.0000000");
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -80,18 +78,18 @@ describe("price lookup cache TTL", () => {
     const cache = createCache();
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce("1.0000000")
-      .mockResolvedValueOnce("2.0000000");
+      .mockResolvedValueOnce({ price: 10_000_000n, creator: "GCREATOR" })
+      .mockResolvedValueOnce({ price: 20_000_000n, creator: "GCREATOR" });
     let currentTime = 1_000;
     const now = () => currentTime;
     const ttlMs = 5_000;
 
-    const first = await lookupPrice({ cache, now, ttlMs, fetcher });
+    const first = await getOnChainPrice("res-1", { cache, now, ttlMs, fetcher });
     expect(first.cached).toBe(false);
     expect(first.price).toBe("1.0000000");
 
     currentTime += ttlMs + 1; // expired
-    const second = await lookupPrice({ cache, now, ttlMs, fetcher });
+    const second = await getOnChainPrice("res-1", { cache, now, ttlMs, fetcher });
     expect(second.cached).toBe(false);
     expect(second.price).toBe("2.0000000");
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -105,11 +103,11 @@ describe("price lookup error paths", () => {
     const fetcher = vi.fn().mockRejectedValue(original);
 
     await expect(
-      lookupPrice({ cache, now: () => 0, ttlMs: 1_000, fetcher }),
+      getOnChainPrice("res-1", { cache, now: () => 0, ttlMs: 1_000, fetcher }),
     ).rejects.toBeInstanceOf(OnChainLookupError);
 
     try {
-      await lookupPrice({ cache, now: () => 0, ttlMs: 1_000, fetcher });
+      await getOnChainPrice("res-1", { cache, now: () => 0, ttlMs: 1_000, fetcher });
       throw new Error("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(OnChainLookupError);
@@ -122,11 +120,11 @@ describe("price lookup error paths", () => {
     const fetcher = vi.fn().mockResolvedValue(null);
 
     await expect(
-      lookupPrice({ cache, now: () => 0, ttlMs: 1_000, fetcher }),
+      getOnChainPrice("res-1", { cache, now: () => 0, ttlMs: 1_000, fetcher }),
     ).rejects.toBeInstanceOf(OnChainLookupError);
 
     try {
-      await lookupPrice({ cache, now: () => 0, ttlMs: 1_000, fetcher });
+      await getOnChainPrice("res-1", { cache, now: () => 0, ttlMs: 1_000, fetcher });
       throw new Error("expected throw");
     } catch (err) {
       expect(err).toBeInstanceOf(OnChainLookupError);
@@ -134,6 +132,3 @@ describe("price lookup error paths", () => {
     }
   });
 });
-```
-
-Note: The test file references a `lookupPrice` function that must be exported from `stellarRegistry.ts` with the described options (`cache`, `now`, `ttlMs`, `fetcher`) and return shape (`{ price, cached }`). If the actual exported function has a different name or signature, adjust the import and calls accordingly.

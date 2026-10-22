@@ -56,7 +56,7 @@ router.get("/debug/db", async (req, res) => {
   function digest(value: string): Buffer {
     return createHash("sha256").update(value).digest();
   }
-  const expected = process.env.ADMIN_API_KEY;
+  const expected = config.ADMIN_API_KEY;
   const key = req.headers["x-admin-key"];
   if (!expected || typeof key !== "string" || !timingSafeEqual(digest(key), digest(expected))) {
     throw new AppError("UNAUTHORIZED", "Unauthorized");

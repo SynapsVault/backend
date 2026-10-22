@@ -6,7 +6,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 // Intercept process.exit so the test process doesn't actually terminate.
 const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
 
-const flushMock = vi.fn().mockResolvedValue(true);
+// vi.mock factories are hoisted above imports, so shared mocks must be too.
+const flushMock = vi.hoisted(() => vi.fn().mockResolvedValue(true));
 
 vi.mock("@sentry/node", () => ({
   init: vi.fn(),
@@ -14,7 +15,9 @@ vi.mock("@sentry/node", () => ({
   flush: flushMock,
 }));
 
-vi.mock("./config.js", () => ({ config: { SENTRY_DSN: undefined } }));
+vi.mock("./config.js", () => ({
+  config: { SENTRY_DSN: undefined, PORT: 0, IDEMPOTENCY_TTL_MS: 1000, WORKERS_ENABLED: false },
+}));
 vi.mock("./lib/sentry.js", () => ({
   initSentry: vi.fn(),
   captureServerException: vi.fn(),
@@ -24,7 +27,7 @@ vi.mock("./lib/logger.js", () => ({
 }));
 vi.mock("./app.js", () => ({ createApp: () => ({ listen: vi.fn(() => ({ close: vi.fn() })) }) }));
 vi.mock("./db/client.js", () => ({
-  pgClient: Object.assign(vi.fn(), { connect: vi.fn(), end: vi.fn() }),
+  pgClient: Object.assign(vi.fn(), { reserve: vi.fn(), end: vi.fn() }),
   startPoolMetrics: vi.fn(),
   stopPoolMetrics: vi.fn(),
 }));
@@ -37,6 +40,15 @@ vi.mock("./workers/retryPendingWorker.js", () => ({
 vi.mock("./workers/eventListener.js", () => ({
   startEventListener: vi.fn(),
   stopEventListener: vi.fn(),
+}));
+vi.mock("./workers/webhookOutboxWorker.js", () => ({
+  startWebhookOutboxWorker: vi.fn(),
+  stopWebhookOutboxWorker: vi.fn(),
+}));
+vi.mock("./lib/idempotency.js", () => ({ useSharedIdempotencyStore: vi.fn() }));
+vi.mock("./lib/idempotencyPgStore.js", () => ({
+  createPostgresRowStore: vi.fn(),
+  createSharedIdempotencyStore: vi.fn(),
 }));
 vi.mock("./tracing.js", () => ({}));
 
@@ -51,7 +63,11 @@ describe("#53 uncaughtException handler", () => {
     await import("./index.js");
 
     const err = new Error("boom — uncaught");
-    process.emit("uncaughtException", err, "uncaughtException");
+    (process.emit as (event: string, ...args: unknown[]) => boolean)(
+      "uncaughtException",
+      err,
+      "uncaughtException",
+    );
 
     // Allow the flush promise to resolve.
     await new Promise((r) => setTimeout(r, 50));

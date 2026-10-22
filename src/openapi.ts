@@ -760,6 +760,70 @@ export const openApiSpec = {
         },
       },
     },
+    "/publishers/me/api-keys/rotate": {
+      post: {
+        tags: ["Publishers"],
+        summary: "Rotate own API key; the old key stops working immediately",
+        operationId: "rotateApiKey",
+        security: [{ ApiKeyAuth: [] }],
+        responses: {
+          "200": {
+            description: "New API key (shown once)",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    apiKey: { type: "string" },
+                    rotatedAt: { type: "string", format: "date-time" },
+                  },
+                },
+              },
+            },
+          },
+          "401": {
+            description: "Missing or invalid API key",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "429": {
+            description: "Rate limit exceeded",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/RateLimitError" } } },
+          },
+        },
+      },
+    },
+    "/publishers/me/signing-secret/rotate": {
+      post: {
+        tags: ["Publishers"],
+        summary: "Rotate own HMAC request-signing secret",
+        operationId: "rotateSigningSecret",
+        security: [{ ApiKeyAuth: [] }],
+        responses: {
+          "200": {
+            description: "New signing secret (shown once)",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    signingSecret: { type: "string" },
+                    rotatedAt: { type: "string", format: "date-time" },
+                  },
+                },
+              },
+            },
+          },
+          "401": {
+            description: "Missing or invalid API key",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "429": {
+            description: "Rate limit exceeded",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/RateLimitError" } } },
+          },
+        },
+      },
+    },
     "/publishers/me/analytics": {
       get: {
         tags: ["Publishers"],
@@ -928,6 +992,62 @@ export const openApiSpec = {
           "400": {
             description: "Validation error",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "401": {
+            description: "Missing or invalid API key",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+          },
+          "429": {
+            description: "Rate limit exceeded",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/RateLimitError" } } },
+          },
+        },
+      },
+    },
+    "/publishers/me/webhooks/deliveries": {
+      get: {
+        tags: ["Webhooks"],
+        summary: "List recent webhook deliveries from the outbox",
+        operationId: "listWebhookDeliveries",
+        security: [{ ApiKeyAuth: [] }],
+        parameters: [
+          {
+            name: "limit",
+            in: "query",
+            required: false,
+            schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Most recent deliveries, newest first",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    deliveries: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          id: { type: "string" },
+                          event: { type: "string" },
+                          status: { type: "string", enum: ["pending", "delivered", "failed"] },
+                          attempts: { type: "integer" },
+                          maxAttempts: { type: "integer" },
+                          lastError: { type: "string", nullable: true },
+                          deliveryId: { type: "string", nullable: true },
+                          nextAttemptAt: { type: "string", format: "date-time" },
+                          deliveredAt: { type: "string", format: "date-time", nullable: true },
+                          createdAt: { type: "string", format: "date-time" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
           "401": {
             description: "Missing or invalid API key",

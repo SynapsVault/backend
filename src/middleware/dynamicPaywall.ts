@@ -6,18 +6,17 @@ import { resources } from "../db/schema.js";
 import type { RoutesConfig } from "@x402/core/server";
 import { getLogger } from "../lib/logger.js";
 import { network, sharedX402ResourceServer } from "../lib/x402.js";
-import { getResource } from "../services/registryClient.js";
-import { getOnChainPrice, normalizeUsdcPrice, stroopsToUsdc } from "../lib/stellarRegistry.js";
+import { getOnChainPrice, normalizeUsdcPrice } from "../lib/stellarRegistry.js";
 import { createTtlCache } from "../lib/ttlCache.js";
 import { AppError } from "../lib/errors.js";
 
 const CACHE_TTL_MS = 60_000; // 1 minute
-const MIDDLEWARE_CACHE_MAX_SIZE = 1000;
+export const MIDDLEWARE_CACHE_MAX_SIZE = 1000;
 
 // Cache middleware instances by resource ID to avoid re-creating on every request.
 // Expired entries are evicted and the cache size is bounded.
-const middlewareCache = createTtlCache<ReturnType<typeof paymentMiddleware>>({
-  ttlMs: CACHE_TTL_MS,
+export const middlewareCache = createTtlCache<ReturnType<typeof paymentMiddleware>>({
+  defaultTtlMs: CACHE_TTL_MS,
   maxSize: MIDDLEWARE_CACHE_MAX_SIZE,
 });
 
@@ -89,13 +88,11 @@ export async function dynamicPaywall(req: Request, res: Response, next: NextFunc
   // Attach resource to request for the delivery handler
   (req as any).resource = resource;
 
-  // Derive the final price from the on-chain price already fetched above
-  // (cached per TTL), so each resource is looked up once per TTL window.
-  let finalPrice = resource.price;
-  if (resource.onchainStatus === "registered") {
-    // Convert from stroops (7 decimals) to a fixed-decimal USDC string
-    finalPrice = stroopsToUsdc(BigInt(onChainPrice));
-  }
+  // Charge the on-chain price already fetched above (cached per TTL, so each
+  // resource is looked up once per TTL window). getOnChainPrice has already
+  // converted stroops to a fixed 7-decimal USDC string, and it equals the
+  // normalized DB price at this point.
+  const finalPrice = onChainPrice;
 
   // Check cache with final price as part of cache key
   const cacheKey = `${resourceId}:${finalPrice}`;

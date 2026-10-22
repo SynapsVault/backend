@@ -160,7 +160,7 @@ import { rootLogger } from "./lib/logger.js";
 
 const envWithDefaults = applyNetworkEnvDefaults(process.env);
 
-const envSchema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.coerce.number().default(4021),
   TRUST_PROXY: z.coerce.number().int().nonnegative().optional(),
@@ -197,6 +197,8 @@ const envSchema = z.object({
 
   // Limits
   MAX_FILE_SIZE_MB: z.coerce.number().default(50),
+  // Max multipart uploads processed at once; excess requests get 503 (#90).
+  MAX_CONCURRENT_UPLOADS: z.coerce.number().int().min(1).default(4),
   // Explicit JSON body limit for express.json() (e.g. "1mb", "512kb").
   MAX_JSON_BODY_SIZE: z.string().default("1mb"),
   // Comma-separated allowlist of accepted upload content types (#87).
@@ -308,6 +310,9 @@ const envSchema = z.object({
   DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(10_000),
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
 });
+
+/** Every environment variable the schema validates (kept in sync with .env.example). */
+export const CONFIG_KEYS = Object.keys(envSchema.shape) as (keyof typeof envSchema.shape)[];
 
 // In production the localhost defaults would leak into accessUrl values and the
 // CORS allowlist, so both URLs must be set explicitly.

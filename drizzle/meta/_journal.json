@@ -89,15 +89,71 @@
     {
       "idx": 12,
       "version": "7",
-      "when": 1761004800000,
-      "tag": "0014_publisher_signing_secret",
+      "when": 1780400000001,
+      "tag": "0011_onchain_attempts",
       "breakpoints": true
     },
     {
       "idx": 13,
       "version": "7",
-      "when": 1761177600000,
+      "when": 1780400000002,
+      "tag": "0011_onchain_pending_since",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1780400000003,
+      "tag": "0012_api_key_rotation",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1780400000004,
+      "tag": "0012_moderation_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1780400000005,
+      "tag": "0013_api_key_hash_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1780400000006,
+      "tag": "0014_publisher_signing_secret",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1780400000007,
       "tag": "0015_lowercase_publisher_email",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1780400000008,
+      "tag": "0015_webhook_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1780400000009,
+      "tag": "0016_encrypt_webhook_secrets",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1780400000010,
+      "tag": "0017_schema_sync",
       "breakpoints": true
     }
   ]

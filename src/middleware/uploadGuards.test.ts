@@ -7,8 +7,14 @@ import fs from "node:fs";
 vi.mock("../config.js", () => ({
   config: {
     MAX_FILE_SIZE_MB: 1,
+    MAX_CONCURRENT_UPLOADS: 6,
     ALLOWED_UPLOAD_MIME_TYPES: "application/pdf,image/png,text/plain",
   },
+}));
+
+vi.mock("../lib/logger.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/logger.js")>()),
+  getRequestId: () => "test-request-id",
 }));
 
 import {
@@ -16,10 +22,7 @@ import {
   validateUploadContentType,
   __getActiveUploadCount,
 } from "./uploadGuards.js";
-
-vi.mock("../lib/requestContext.js", () => ({
-  getRequestId: () => "test-request-id",
-}));
+import { errorHandler } from "./errorHandler.js";
 
 const PDF = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -29,6 +32,7 @@ function buildApp(): Express {
   app.post("/upload", singleFileUpload("file"), validateUploadContentType, (req, res) => {
     res.status(201).json({ ok: true, mimetype: req.file?.mimetype ?? null });
   });
+  app.use(errorHandler);
   return app;
 }
 
@@ -134,37 +138,39 @@ describe("upload guards middleware", () => {
     expect(capturedPath && fs.existsSync(capturedPath)).toBe(true);
   });
 
-  it("keeps memory bounded during concurrent large uploads", async () => {
+  it("keeps concurrent large uploads on disk rather than in memory", async () => {
+    // Heap deltas are unreliable here (supertest shares the process and holds
+    // the request bodies), so assert the mechanism instead: every concurrent
+    // upload is disk-backed and never exposes an in-memory buffer.
     const nearLimit = Buffer.alloc(900 * 1024, 0x41); // just under 1MB limit
     const concurrency = 6;
+    const seen: { path?: string; buffer?: unknown }[] = [];
+    const probe = express();
+    probe.post("/upload", singleFileUpload("file"), validateUploadContentType, (req, res) => {
+      seen.push({
+        path: req.file?.path,
+        buffer: (req.file as unknown as { buffer?: unknown })?.buffer,
+      });
+      res.status(201).json({ ok: true });
+    });
+    probe.use(errorHandler);
 
-    // Warm up so one-off allocations don't skew the measurement.
-    await request(app)
-      .post("/upload")
-      .attach("file", nearLimit, { filename: "warm.txt", contentType: "text/plain" });
-
-    const before = process.memoryUsage().heapUsed;
     const responses = await Promise.all(
       Array.from({ length: concurrency }, (_, i) =>
-        request(app)
+        request(probe)
           .post("/upload")
-          .attach("file", nearLimit, {
-            filename: `big-${i}.txt`,
-            contentType: "text/plain",
-          }),
+          .attach("file", nearLimit, { filename: `big-${i}.txt`, contentType: "text/plain" }),
       ),
     );
-    const after = process.memoryUsage().heapUsed;
 
     for (const res of responses) {
       expect(res.status).toBe(201);
     }
-
-    // If uploads were buffered in memory, heap would grow by ~concurrency * size.
-    // Allow generous slack for GC noise but stay well below full buffering.
-    const growth = after - before;
-    const fullBuffering = concurrency * nearLimit.length;
-    expect(growth).toBeLessThan(fullBuffering / 2);
+    expect(seen).toHaveLength(concurrency);
+    for (const file of seen) {
+      expect(file.buffer).toBeUndefined();
+      expect(typeof file.path).toBe("string");
+    }
   });
 
   it("caps the number of simultaneous uploads", async () => {
@@ -193,7 +199,8 @@ describe("upload guards middleware", () => {
       // Either accepted, or rejected with 503 when the limiter is saturated.
       expect([201, 503]).toContain(res.status);
     }
-    expect(maxObserved).toBeLessThanOrEqual(__getActiveUploadCount() + 1);
+    expect(responses.some((res) => res.status === 503)).toBe(true);
+    expect(maxObserved).toBeLessThanOrEqual(6);
     expect(__getActiveUploadCount()).toBe(0);
   });
 });

@@ -1,363 +1,125 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockReadFileSync = vi.fn();
-const mockWriteFileSync = vi.fn();
-const mockExistsSync = vi.fn();
-const mockMkdirSync = vi.fn();
-
-vi.mock('node:fs', () => ({
-  readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
-  writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
-  existsSync: (...args: unknown[]) => mockExistsSync(...args),
-  mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
+const m = vi.hoisted(() => ({
+  select: vi.fn(), set: vi.fn(), checkpoint: vi.fn(),
+  read: vi.fn(), write: vi.fn(), exists: vi.fn(), mkdir: vi.fn(), events: vi.fn(),
 }));
+vi.mock("node:fs", () => ({ readFileSync: m.read, writeFileSync: m.write, existsSync: m.exists, mkdirSync: m.mkdir }));
+vi.mock("../config.js", () => ({ config: {
+  REGISTRY_CONTRACT_ID: "test-contract", SOROBAN_RPC_URL: "https://rpc.example.com",
+  LOG_LEVEL: "silent", NODE_ENV: "test",
+} }));
+vi.mock("../db/client.js", () => ({ db: {
+  select: m.select,
+  update: () => ({ set: m.set }),
+  insert: () => ({ values: m.checkpoint }),
+} }));
+vi.mock("@stellar/stellar-sdk", () => ({ rpc: { Server: class { getEvents = m.events; } } }));
+import { startEventListener, stopEventListener } from "./eventListener.js";
 
-const mockQuery = vi.fn();
-vi.mock('../db/client.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-}));
-
-vi.mock('../config.js', () => ({
-  config: {
-    contractId: 'C_CONTRACT',
-    rpcUrl: 'https://rpc.example.com',
-    networkPassphrase: 'Test SDF Network ; September 2015',
-    eventPollIntervalMs: 5000,
-    checkpointPath: '/tmp/checkpoint.json',
-  },
-}));
-
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
-vi.mock('../lib/logger.js', () => ({
-  logger: mockLogger,
-}));
-
-const mockGetEvents = vi.fn();
-const mockGetLatestLedger = vi.fn();
-
-vi.mock('@stellar/stellar-sdk', () => {
-  class Server {
-    getEvents = mockGetEvents;
-    getLatestLedger = mockGetLatestLedger;
-  }
-  return {
-    rpc: {
-      Server,
-    },
-    scValToNative: (val: unknown) => {
-      if (val && typeof val === 'object' && '__native' in (val as Record<string, unknown>)) {
-        return (val as Record<string, unknown>).__native;
-      }
-      return val;
-    },
-  };
-});
-
-import { startEventListener, stopEventListener } from './eventListener.js';
-
-function makeEvent(type: string, value: unknown, ledger = 10) {
-  return {
-    type,
-    ledger,
-    txHash: 'txhash',
-    contractId: 'C_CONTRACT',
-    topic: [{ __native: type }],
-    value: { __native: value },
-  };
+function selectRows(rows: unknown[]) {
+  m.select.mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve(rows) }) });
 }
-
-async function flush() {
+function event(type: string, value: Record<string, unknown>, ledger = 10) {
+  return { ledger, id: `event-${ledger}`, topic: [type, "res-1"], value };
+}
+async function start() {
+  startEventListener();
   await vi.advanceTimersByTimeAsync(0);
 }
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.useFakeTimers();
+  m.select.mockReturnValue({ from: () => ({ where: () => Promise.resolve([]) }) });
+  m.set.mockReturnValue({ where: () => Object.assign(Promise.resolve(), { returning: () => Promise.resolve([{ id: "res-1" }]) }) });
+  m.checkpoint.mockReturnValue({ onConflictDoUpdate: () => Promise.resolve() });
+  m.exists.mockReturnValue(true);
+  m.read.mockReturnValue(JSON.stringify({ lastLedger: 5 }));
+  m.events.mockResolvedValue({ events: [] });
+});
+afterEach(() => {
+  stopEventListener();
+  vi.useRealTimers();
+});
 
-describe('eventListener', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    mockReadFileSync.mockReset();
-    mockWriteFileSync.mockReset();
-    mockExistsSync.mockReset();
-    mockMkdirSync.mockReset();
-    mockQuery.mockReset();
-    mockGetEvents.mockReset();
-    mockGetLatestLedger.mockReset();
-    mockLogger.debug.mockReset();
-    mockLogger.info.mockReset();
-    mockLogger.warn.mockReset();
-    mockLogger.error.mockReset();
-
-    mockQuery.mockResolvedValue({ rows: [] });
-    mockGetLatestLedger.mockResolvedValue({ sequence: 100 });
-    mockGetEvents.mockResolvedValue({ events: [], latestLedger: 100 });
-    mockExistsSync.mockReturnValue(false);
-    mockWriteFileSync.mockReturnValue(undefined);
-    mockMkdirSync.mockReturnValue(undefined);
+describe("eventListener", () => {
+  it("initializes an empty checkpoint without polling RPC", async () => {
+    m.exists.mockReturnValue(false);
+    await start();
+    expect(m.checkpoint).toHaveBeenCalledWith(expect.objectContaining({ lastLedger: 1 }));
+    expect(m.events).not.toHaveBeenCalled();
   });
-
-  afterEach(() => {
-    stopEventListener();
-    vi.useRealTimers();
+  it("prefers the persisted database checkpoint", async () => {
+    selectRows([{ lastLedger: 42 }]);
+    await start();
+    expect(m.events).toHaveBeenCalledWith(expect.objectContaining({ startLedger: 42 }));
   });
-
-  describe('checkpointing', () => {
-    it('writes lastLedger=1 and skips RPC on first poll with no tracker file', async () => {
-      mockExistsSync.mockReturnValue(false);
-
-      startEventListener();
-      await flush();
-
-      expect(mockWriteFileSync).toHaveBeenCalled();
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written.lastLedger).toBe(1);
-      expect(mockGetEvents).not.toHaveBeenCalled();
-    });
-
-    it('saves tracker to maxLedger+1 after processing events', async () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({ lastLedger: 5 }));
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('register', { __native: 'GABC' }, 20)],
-        latestLedger: 20,
-      });
-
-      startEventListener();
-      await flush();
-
-      const lastCall = mockWriteFileSync.mock.calls[mockWriteFileSync.mock.calls.length - 1];
-      const written = JSON.parse(lastCall[1] as string);
-      expect(written.lastLedger).toBe(21);
-    });
-
-    it('leaves checkpoint unchanged on empty event list', async () => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({ lastLedger: 5 }));
-      mockGetEvents.mockResolvedValue({ events: [], latestLedger: 5 });
-
-      startEventListener();
-      await flush();
-
-      const lastCall = mockWriteFileSync.mock.calls[mockWriteFileSync.mock.calls.length - 1];
-      const written = JSON.parse(lastCall[1] as string);
-      expect(written.lastLedger).toBe(5);
-    });
+  it("falls back to the tracker file when the database read fails", async () => {
+    m.select.mockImplementationOnce(() => { throw new Error("DB down"); });
+    await start();
+    expect(m.events).toHaveBeenCalledWith(expect.objectContaining({ startLedger: 5 }));
   });
-
-  describe('event handling', () => {
-    beforeEach(() => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({ lastLedger: 5 }));
-    });
-
-    it('register updates onchainStatus when resource exists', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'res-1' }] });
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('register', { __native: 'GABC' }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeDefined();
-    });
-
-    it('register is a no-op when resource is missing', async () => {
-      mockQuery.mockResolvedValue({ rows: [] });
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('register', { __native: 'GABC' }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeUndefined();
-    });
-
-    it('setprice converts i128 value to USDC decimal and writes', async () => {
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('setprice', { __native: '10000000' }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeDefined();
-      const params = updateCall![1] as unknown[];
-      expect(params).toContain(10);
-    });
-
-    it('transfer updates walletAddress', async () => {
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('transfer', { __native: 'GNEWWALLET' }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeDefined();
-      const params = updateCall![1] as unknown[];
-      expect(params).toContain('GNEWWALLET');
-    });
-
-    it('setlisted true updates listed', async () => {
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('setlisted', { __native: true }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeDefined();
-      const params = updateCall![1] as unknown[];
-      expect(params).toContain(true);
-    });
-
-    it('setlisted false updates listed', async () => {
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('setlisted', { __native: false }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeDefined();
-      const params = updateCall![1] as unknown[];
-      expect(params).toContain(false);
-    });
-
-    it('updmeta does not write to DB', async () => {
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('updmeta', { __native: 'meta' }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeUndefined();
-    });
-
-    it('settags does not write to DB', async () => {
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('settags', { __native: ['a', 'b'] }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      const updateCall = mockQuery.mock.calls.find((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCall).toBeUndefined();
-    });
-
-    it('unknown type only logs debug', async () => {
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('unknowntype', { __native: 'x' }, 10)],
-        latestLedger: 10,
-      });
-
-      startEventListener();
-      await flush();
-
-      expect(mockQuery).not.toHaveBeenCalled();
-      expect(mockLogger.debug).toHaveBeenCalled();
-    });
+  it("leaves the checkpoint unchanged on an empty event list", async () => {
+    await start();
+    expect(m.checkpoint).not.toHaveBeenCalled();
+    expect(m.write).not.toHaveBeenCalled();
   });
-
-  describe('error recovery', () => {
-    beforeEach(() => {
-      mockExistsSync.mockReturnValue(true);
-      mockReadFileSync.mockReturnValue(JSON.stringify({ lastLedger: 5 }));
-    });
-
-    it('a throwing handler is logged and does not stop subsequent events', async () => {
-      mockQuery
-        .mockRejectedValueOnce(new Error('boom'))
-        .mockResolvedValue({ rows: [] });
-      mockGetEvents.mockResolvedValue({
-        events: [
-          makeEvent('setprice', { __native: '10000000' }, 10),
-          makeEvent('transfer', { __native: 'GNEWWALLET' }, 11),
-        ],
-        latestLedger: 11,
-      });
-
-      startEventListener();
-      await flush();
-
-      expect(mockLogger.error).toHaveBeenCalled();
-      const updateCalls = mockQuery.mock.calls.filter((c) =>
-        String(c[0]).toLowerCase().includes('update'),
-      );
-      expect(updateCalls.length).toBeGreaterThanOrEqual(2);
-    });
-
-    it('a throwing getEvents is caught and logged', async () => {
-      mockGetEvents.mockRejectedValue(new Error('rpc down'));
-
-      startEventListener();
-      await flush();
-
-      expect(mockLogger.error).toHaveBeenCalled();
-    });
-
-    it('a corrupt tracker file falls back to 0', async () => {
-      mockReadFileSync.mockReturnValue('not-json{');
-
-      startEventListener();
-      await flush();
-
-      expect(mockLogger.warn).toHaveBeenCalled();
-      expect(mockGetEvents).toHaveBeenCalled();
-      const call = mockGetEvents.mock.calls[0][0] as { startLedger: number };
-      expect(call.startLedger).toBe(0);
-    });
-
-    it('a write failure is logged without throwing', async () => {
-      mockWriteFileSync.mockImplementation(() => {
-        throw new Error('disk full');
-      });
-      mockGetEvents.mockResolvedValue({
-        events: [makeEvent('register', { __native: 'GABC' }, 10)],
-        latestLedger: 10,
-      });
-
-      expect(() => startEventListener()).not.toThrow();
-      await flush();
-
-      expect(mockLogger.error).toHaveBeenCalled();
-    });
+  it("updates an existing registration and saves the checkpoint", async () => {
+    selectRows([]);
+    selectRows([{ id: "res-1" }]);
+    m.events.mockResolvedValue({ events: [event("register", { type: "string", value: "owner" }, 20)] });
+    await start();
+    expect(m.set).toHaveBeenCalledWith({ onchainStatus: "registered" });
+    expect(m.checkpoint).toHaveBeenCalledWith(expect.objectContaining({ lastLedger: 21 }));
+  });
+  it("does not update a missing registration", async () => {
+    m.events.mockResolvedValue({ events: [event("register", { type: "string", value: "owner" })] });
+    await start();
+    expect(m.set).not.toHaveBeenCalled();
+  });
+  it("converts stroops to a USDC decimal price", async () => {
+    m.events.mockResolvedValue({ events: [event("setprice", { type: "i128", value: "10000000" })] });
+    await start();
+    expect(m.set).toHaveBeenCalledWith({ price: "1" });
+  });
+  it("updates the owner on a transfer", async () => {
+    m.events.mockResolvedValue({ events: [event("transfer", { type: "address", value: "GNEW" })] });
+    await start();
+    expect(m.set).toHaveBeenCalledWith({ walletAddress: "GNEW" });
+  });
+  it.each([true, false])("syncs listed=%s", async (listed) => {
+    m.events.mockResolvedValue({ events: [event("setlisted", { type: "bool", value: String(listed) })] });
+    await start();
+    expect(m.set).toHaveBeenCalledWith({ listed });
+  });
+  it("syncs title and description metadata", async () => {
+    m.events.mockResolvedValue({ events: [event("updmeta", { type: "string", value: JSON.stringify({ title: "New", description: "Updated" }) })] });
+    await start();
+    expect(m.set).toHaveBeenCalledWith({ title: "New", description: "Updated" });
+  });
+  it("skips unpersisted tags and unknown events", async () => {
+    m.events.mockResolvedValue({ events: [event("settags", { type: "vec", vec: [] }), event("unknown", { type: "string" })] });
+    await start();
+    expect(m.set).not.toHaveBeenCalled();
+  });
+  it("keeps the checkpoint on RPC errors and polls again", async () => {
+    m.events.mockRejectedValueOnce(new Error("RPC down"));
+    await start();
+    expect(m.checkpoint).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(m.events).toHaveBeenCalledTimes(2);
+  });
+  it("resets a corrupt fallback file to the initial checkpoint", async () => {
+    m.read.mockReturnValue("not JSON");
+    await start();
+    expect(m.checkpoint).toHaveBeenCalledWith(expect.objectContaining({ lastLedger: 1 }));
+    expect(m.events).not.toHaveBeenCalled();
+  });
+  it("continues polling after a fallback file write fails", async () => {
+    m.write.mockImplementation(() => { throw new Error("disk full"); });
+    m.events.mockResolvedValue({ events: [event("unknown", { type: "string" })] });
+    await start();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(m.events).toHaveBeenCalledTimes(2);
   });
 });

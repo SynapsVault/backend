@@ -95,13 +95,37 @@ async function runSorobanRpcProbe(): Promise<DependencyCheck> {
   }
 }
 
-const databaseProbeCache = createTtlCache<DependencyCheck>(PROBE_CACHE_TTL_MS);
-const sorobanRpcProbeCache = createTtlCache<DependencyCheck>(PROBE_CACHE_TTL_MS);
+// Probe results are cached briefly so frequent readiness polls don't hammer
+// the database and RPC; concurrent callers share one in-flight probe.
+const probeCache = createTtlCache<DependencyCheck>({ defaultTtlMs: PROBE_CACHE_TTL_MS });
+const inFlightProbes = new Map<string, Promise<DependencyCheck>>();
+
+function cachedProbe(key: string, run: () => Promise<DependencyCheck>): Promise<DependencyCheck> {
+  const cached = probeCache.get(key);
+  if (cached) return Promise.resolve(cached);
+  let pending = inFlightProbes.get(key);
+  if (!pending) {
+    pending = run()
+      .then((result) => {
+        probeCache.set(key, result);
+        return result;
+      })
+      .finally(() => inFlightProbes.delete(key));
+    inFlightProbes.set(key, pending);
+  }
+  return pending;
+}
 
 export async function probeDatabase(): Promise<DependencyCheck> {
-  return databaseProbeCache.get(() => runDatabaseProbe());
+  return cachedProbe("database", runDatabaseProbe);
 }
 
 export async function probeSorobanRpc(): Promise<DependencyCheck> {
-  return sorobanRpcProbeCache.get(() => runSorobanRpcProbe());
+  return cachedProbe("sorobanRpc", runSorobanRpcProbe);
+}
+
+/** All readiness dependency checks, keyed by dependency name. */
+export async function getCachedProbes(): Promise<Record<string, DependencyCheck>> {
+  const [database, sorobanRpc] = await Promise.all([probeDatabase(), probeSorobanRpc()]);
+  return { database, sorobanRpc };
 }
