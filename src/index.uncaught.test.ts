@@ -25,7 +25,7 @@ vi.mock("./lib/sentry.js", () => ({
 vi.mock("./lib/logger.js", () => ({
   rootLogger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
-vi.mock("./app.js", () => ({ createApp: () => ({ listen: vi.fn(() => ({ close: vi.fn() })) }) }));
+vi.mock("./app.js", () => ({ default: { listen: vi.fn(() => ({ close: vi.fn() })) } }));
 vi.mock("./db/client.js", () => ({
   pgClient: Object.assign(vi.fn(), { reserve: vi.fn(), end: vi.fn() }),
   startPoolMetrics: vi.fn(),

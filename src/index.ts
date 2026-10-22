@@ -5,8 +5,8 @@
 import "./tracing.js";
 import type { Server } from "node:http";
 import { config } from "./config.js";
-import { initSentry, captureServerException } from "./lib/sentry.js";
-import { createApp } from "./app.js";
+import { captureServerException } from "./lib/sentry.js";
+import app from "./app.js";
 import { rootLogger } from "./lib/logger.js";
 import { beginShutdown, whenDrained, inFlightCount } from "./lib/lifecycle.js";
 import { pgClient } from "./db/client.js";
@@ -15,24 +15,6 @@ import { startRetryPendingWorker, stopRetryPendingWorker } from "./workers/retry
 import { startEventListener, stopEventListener } from "./workers/eventListener.js";
 import { startWebhookOutboxWorker, stopWebhookOutboxWorker } from "./workers/webhookOutboxWorker.js";
 import { closeRateLimitStore } from "./lib/rateLimit/index.js";
-import { useSharedIdempotencyStore } from "./lib/idempotency.js";
-import {
-  createPostgresRowStore,
-  createSharedIdempotencyStore,
-  type PgSql,
-} from "./lib/idempotencyPgStore.js";
-
-initSentry();
-
-// Share idempotency records across replicas via Postgres (#71).
-useSharedIdempotencyStore(
-  createSharedIdempotencyStore(createPostgresRowStore(pgClient as unknown as PgSql), {
-    defaultTtlMs: config.IDEMPOTENCY_TTL_MS,
-  }),
-);
-
-const app = createApp();
-
 // Advisory lock key used to elect a single leader across replicas. Only the
 // instance holding this lock runs the background workers, so scaling out does
 // not duplicate RPC load or let replicas write the same rows concurrently.

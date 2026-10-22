@@ -1,3 +1,4 @@
+import "./tracing.js";
 import express, { type Express, type Request } from "express";
 import compression from "compression";
 import { config } from "./config.js";
@@ -18,6 +19,14 @@ import paymentsRouter from "./routes/payments.js";
 import docsRouter from "./routes/docs.js";
 import metricsRouter from "./routes/metrics.js";
 import adminRouter from "./routes/admin.js";
+import { initSentry } from "./lib/sentry.js";
+import { pgClient } from "./db/client.js";
+import { useSharedIdempotencyStore } from "./lib/idempotency.js";
+import {
+  createPostgresRowStore,
+  createSharedIdempotencyStore,
+  type PgSql,
+} from "./lib/idempotencyPgStore.js";
 
 export function createApp(): Express {
   const app = express();
@@ -66,3 +75,14 @@ export function createApp(): Express {
 
   return app;
 }
+
+initSentry();
+useSharedIdempotencyStore(
+  createSharedIdempotencyStore(createPostgresRowStore(pgClient as unknown as PgSql), {
+    defaultTtlMs: config.IDEMPOTENCY_TTL_MS,
+  }),
+);
+
+// Vercel detects src/app.ts as the Express entry point. Export the handler
+// without opening a port or starting process-lifetime background workers.
+export default createApp();
