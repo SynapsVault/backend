@@ -94,6 +94,10 @@ jobs:
             -e SUPABASE_URL=https://placeholder.supabase.co \
             -e SUPABASE_SERVICE_KEY=ci-placeholder \
             -e ADMIN_API_KEY=ci-admin-key \
+            -e BASE_URL=http://127.0.0.1:3000 \
+            -e WEB_APP_URL=http://127.0.0.1:5173 \
+            -e SIGNING_SECRET_KEY="$SECRET" \
+            -e WORKERS_ENABLED=false \
             synapsvault-backend:ci
 
       - name: Smoke test
