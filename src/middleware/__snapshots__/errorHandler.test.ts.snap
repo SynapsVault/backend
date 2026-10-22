@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`errorHandler > snapshots the generic app error response body 1`] = `
+{
+  "code": "INTERNAL_ERROR",
+  "error": "Internal server error",
+  "requestId": "req-123",
+}
+`;
+
+exports[`errorHandler > snapshots the not-found response body 1`] = `
+{
+  "code": "NOT_FOUND",
+  "error": "Route GET /nope not found",
+  "requestId": "req-123",
+}
+`;

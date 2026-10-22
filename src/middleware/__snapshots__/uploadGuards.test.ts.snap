@@ -1,0 +1,33 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`upload guards middleware > rejects a disallowed content type with 415 1`] = `
+{
+  "code": "UNSUPPORTED_MEDIA_TYPE",
+  "error": "Unsupported content type "application/zip". Allowed: application/pdf, image/png, text/plain",
+  "requestId": "test-request-id",
+}
+`;
+
+exports[`upload guards middleware > rejects malformed multipart bodies with 400 1`] = `
+{
+  "code": "VALIDATION_ERROR",
+  "error": "Malformed multipart body: Unexpected end of form",
+  "requestId": "test-request-id",
+}
+`;
+
+exports[`upload guards middleware > rejects oversized uploads with 413 1`] = `
+{
+  "code": "PAYLOAD_TOO_LARGE",
+  "error": "File exceeds the maximum size of 1MB",
+  "requestId": "test-request-id",
+}
+`;
+
+exports[`upload guards middleware > rejects when declared type does not match detected bytes (415) 1`] = `
+{
+  "code": "UNSUPPORTED_MEDIA_TYPE",
+  "error": "Declared content type "application/pdf" does not match file contents (detected "image/png")",
+  "requestId": "test-request-id",
+}
+`;

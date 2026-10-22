@@ -7,9 +7,7 @@ dist/
 coverage/
 last-processed-ledger.json
 
-# Test snapshots, vitest cache, and coverage artefacts
-**/__snapshots__/
-*.snap
+# Vitest cache and coverage artefacts (test snapshots are versioned)
 .vitest-cache/
 test-results/
 vitest.d.ts
