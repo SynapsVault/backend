@@ -17,6 +17,9 @@ import {
   rotateApiKey,
   rotateSigningSecret,
   encodeWebhookSecretForStorage,
+  getPublisherResourcesPage,
+  PUBLISHER_RESOURCES_DEFAULT_LIMIT,
+  PUBLISHER_RESOURCES_MAX_LIMIT,
 } from "../services/publisherService.js";
 import { deliver, webhookUrlProblem } from "../services/webhookService.js";
 import { replayWebhookDelivery } from "../workers/webhookOutboxWorker.js";
@@ -87,9 +90,61 @@ router.get("/publishers/me", apiKeyAuth, async (req, res) => {
 });
 
 // GET /publishers/me/resources — own resources (authenticated)
+// Returns the full list without pagination. Kept for backwards compatibility.
+// New callers should prefer /publishers/me/resources/page for large inventories.
 router.get("/publishers/me/resources", apiKeyAuth, async (req, res) => {
   const resources = await getPublisherResources(req.publisher!.id);
   res.json(resources);
+});
+
+// GET /publishers/me/resources/page — paginated resource listing (#220)
+//
+// Returns one page of the authenticated publisher's resources ordered by
+// (createdAt DESC, id DESC). The response includes an opaque `nextCursor`
+// that callers pass as the `after` query parameter on the next request.
+//
+// Response shape:
+//   {
+//     resources: Resource[],   -- the page contents
+//     nextCursor: string|null, -- pass as ?after= to fetch the next page
+//     hasNextPage: boolean     -- whether more pages exist
+//   }
+//
+// Query parameters:
+//   limit  (1–100, default 20)
+//   after  opaque cursor from a previous response
+router.get("/publishers/me/resources/page", apiKeyAuth, publisherRateLimit, async (req, res) => {
+  const pub = req.publisher!;
+  const rawLimit = req.query.limit;
+  const rawAfter = req.query.after;
+
+  // Reject repeated / object params.
+  if (Array.isArray(rawLimit) || (typeof rawLimit === "object" && rawLimit !== null)) {
+    throw new AppError("VALIDATION_ERROR", "limit must be a single value");
+  }
+  if (Array.isArray(rawAfter) || (typeof rawAfter === "object" && rawAfter !== null)) {
+    throw new AppError("VALIDATION_ERROR", "after must be a single value");
+  }
+
+  let limit = PUBLISHER_RESOURCES_DEFAULT_LIMIT;
+  if (rawLimit !== undefined) {
+    const parsed = Math.trunc(Number(rawLimit as string));
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > PUBLISHER_RESOURCES_MAX_LIMIT) {
+      throw new AppError(
+        "VALIDATION_ERROR",
+        `limit must be between 1 and ${PUBLISHER_RESOURCES_MAX_LIMIT}`,
+      );
+    }
+    limit = parsed;
+  }
+
+  const page = await getPublisherResourcesPage(
+    pub.id,
+    limit,
+    rawAfter as string | undefined,
+  );
+
+  res.json(page);
 });
 
 // POST /publishers/me/api-keys/rotate — issue a new key, invalidate the old one (#40)

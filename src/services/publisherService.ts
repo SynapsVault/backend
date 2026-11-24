@@ -11,6 +11,7 @@ import {
 import { signingKeyring, webhookKeyring } from "../lib/secretKeys.js";
 import { config } from "../config.js";
 import { AppError } from "../lib/errors.js";
+import { and, lt, lte, or, desc, asc } from "drizzle-orm";
 
 export async function registerPublisher(data: {
   name: string;
@@ -56,6 +57,118 @@ export async function getPublisherById(id: string) {
 
 export async function getPublisherResources(publisherId: string) {
   return db.select().from(resources).where(eq(resources.publisherId, publisherId));
+}
+
+// ── Publisher resource cursor pagination (#220) ──────────────────────────────
+//
+// Opaque cursors encode (createdAt, id) so the page boundary is stable even
+// when two resources share the same createdAt timestamp.  The cursor is
+// base64url-encoded JSON: { t: ISO string, id: string }.
+//
+// Security: cursors are publisher-scoped.  The route layer enforces that the
+// decoded publisherId matches the authenticated publisher before executing the
+// query, so a cursor minted for publisher A cannot expose rows for publisher B.
+//
+// Maximum page size is 100; the default is 20.
+
+export const PUBLISHER_RESOURCES_MAX_LIMIT = 100;
+export const PUBLISHER_RESOURCES_DEFAULT_LIMIT = 20;
+
+/** Encode an opaque cursor from a createdAt timestamp and row id. */
+export function encodeResourceCursor(createdAt: Date, id: string): string {
+  const payload = JSON.stringify({ t: createdAt.toISOString(), id });
+  return Buffer.from(payload).toString("base64url");
+}
+
+/** Decode an opaque cursor. Returns null when the cursor is malformed. */
+export function decodeResourceCursor(cursor: string): { t: Date; id: string } | null {
+  try {
+    const raw = Buffer.from(cursor, "base64url").toString("utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>).t !== "string" ||
+      typeof (parsed as Record<string, unknown>).id !== "string"
+    ) {
+      return null;
+    }
+    const t = new Date((parsed as Record<string, unknown>).t as string);
+    if (isNaN(t.getTime())) return null;
+    return { t, id: (parsed as Record<string, unknown>).id as string };
+  } catch {
+    return null;
+  }
+}
+
+export interface ResourcePage {
+  resources: Array<typeof resources.$inferSelect>;
+  /** Opaque cursor to pass as `after` for the next page. Absent on the last page. */
+  nextCursor: string | null;
+  /** True when there is at least one more page after this one. */
+  hasNextPage: boolean;
+}
+
+/**
+ * Fetch a single page of a publisher's resources ordered by (createdAt DESC, id DESC).
+ *
+ * Ordering by (createdAt DESC, id DESC) means newest resources appear first.
+ * When two resources share the same createdAt the tie-break on id (a CUID2)
+ * is arbitrary but stable, so no rows are skipped or duplicated across pages.
+ *
+ * @param publisherId  Publisher whose resources to list.
+ * @param limit        Page size (1–100). Defaults to 20.
+ * @param afterCursor  Opaque cursor from a previous response. When omitted the
+ *                     first page is returned. The cursor must have been minted
+ *                     by this publisher's listing — a foreign cursor returns a
+ *                     validation error.
+ */
+export async function getPublisherResourcesPage(
+  publisherId: string,
+  limit = PUBLISHER_RESOURCES_DEFAULT_LIMIT,
+  afterCursor?: string,
+): Promise<ResourcePage> {
+  const pageSize = Math.min(Math.max(Math.trunc(limit), 1), PUBLISHER_RESOURCES_MAX_LIMIT);
+
+  let cursorCondition: ReturnType<typeof and> | undefined;
+
+  if (afterCursor !== undefined) {
+    const decoded = decodeResourceCursor(afterCursor);
+    if (!decoded) {
+      throw new AppError("VALIDATION_ERROR", "Invalid pagination cursor");
+    }
+
+    // Seek past (decoded.t, decoded.id):
+    //   createdAt < t  → definitely after the cursor row
+    //   createdAt = t  → need id < cursor id  (DESC ordering, so lower id comes later)
+    cursorCondition = or(
+      lt(resources.createdAt, decoded.t),
+      and(
+        lte(resources.createdAt, decoded.t),
+        lt(resources.id, decoded.id),
+      ),
+    );
+  }
+
+  // Fetch one extra row to determine whether a next page exists.
+  const rows = await db
+    .select()
+    .from(resources)
+    .where(
+      cursorCondition
+        ? and(eq(resources.publisherId, publisherId), cursorCondition)
+        : eq(resources.publisherId, publisherId),
+    )
+    .orderBy(desc(resources.createdAt), desc(resources.id))
+    .limit(pageSize + 1);
+
+  const hasNextPage = rows.length > pageSize;
+  const pageRows = hasNextPage ? rows.slice(0, pageSize) : rows;
+  const lastRow = pageRows[pageRows.length - 1];
+  const nextCursor =
+    hasNextPage && lastRow ? encodeResourceCursor(lastRow.createdAt, lastRow.id) : null;
+
+  return { resources: pageRows, nextCursor, hasNextPage };
 }
 
 /**
