@@ -1,4 +1,5 @@
 import { Router, type Router as RouterType } from "express";
+import { toReceiptTerms, RECEIPT_ASSET_CODE } from "../lib/purchaseSnapshot.js";
 import { attachmentDisposition } from "../lib/contentDisposition.js";
 import { promises as fs } from "node:fs";
 import { apiKeyAuth } from "../middleware/apiKeyAuth.js";
@@ -23,6 +24,7 @@ import {
   listCatalog,
   countCatalog,
   getResourceMeta,
+  computeResourceEtag,
   getVerificationDetails,
   delistResource,
   getResourceById,
@@ -397,11 +399,11 @@ router.get("/resources/:id/meta", async (req, res) => {
   }
 
   // Weak validator: metadata equality, not byte-for-byte identity.
-  const etag = `W/"${meta.etag}"`;
+  const etag = `W/${computeResourceEtag(meta)}`;
   res.setHeader("ETag", etag);
   res.setHeader("Cache-Control", "public, no-cache");
 
-  if (ifNoneMatchMatches(req.header("If-None-Match"), etag)) {
+  if (req.header("If-None-Match")?.split(",").some(value => { const tag = value.trim(); return tag === "*" || tag.replace(/^W\//, "") === etag.replace(/^W\//, ""); })) {
     res.status(304).end();
     return;
   }
