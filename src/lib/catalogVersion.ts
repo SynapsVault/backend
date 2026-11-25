@@ -1,4 +1,6 @@
-import { db } from './db';
+import { eq, sql } from 'drizzle-orm';
+import { db } from '../db/client.js';
+import { catalogVersion } from '../db/schema.js';
 
 /**
  * Shared catalog cache-version token.
@@ -31,38 +33,10 @@ let memo: MemoizedVersion | null = null;
  * Minimal shape of the shared key/value store used for the version token.
  * Implemented on top of the existing `db` client.
  */
-interface VersionRow {
-  value: string | number | null;
-}
-
-/**
- * Read the current catalog version token from the database.
- * Falls back to 0 when the token has never been written.
- */
 async function readVersionFromDb(): Promise<number> {
-  const row = await db.get<VersionRow>(
-    'SELECT value FROM app_settings WHERE key = ?',
-    [CATALOG_VERSION_KEY],
-  );
-
-  if (!row || row.value === null || row.value === undefined) {
-    return 0;
-  }
-
-  const parsed = Number(row.value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-/**
- * Persist a new catalog version token to the database.
- */
-async function writeVersionToDb(value: number): Promise<void> {
-  await db.run(
-    `INSERT INTO app_settings (key, value)
-     VALUES (?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    [CATALOG_VERSION_KEY, String(value)],
-  );
+  const [row] = await db.select({ version: catalogVersion.version })
+    .from(catalogVersion).where(eq(catalogVersion.id, "global")).limit(1);
+  return row?.version ?? 0;
 }
 
 /**
@@ -95,10 +69,14 @@ export async function getCatalogVersion(
  * replica does not need to re-read the database.
  */
 export async function bumpCatalogVersion(): Promise<number> {
-  const current = await readVersionFromDb();
-  const next = current + 1;
-
-  await writeVersionToDb(next);
+  const [row] = await db.insert(catalogVersion)
+    .values({ id: "global", version: 1 })
+    .onConflictDoUpdate({
+      target: catalogVersion.id,
+      set: { version: sql`${catalogVersion.version} + 1`, updatedAt: new Date() },
+    })
+    .returning({ version: catalogVersion.version });
+  const next = row.version;
 
   memo = { value: next, fetchedAt: Date.now() };
   return next;
