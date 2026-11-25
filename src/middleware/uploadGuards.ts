@@ -77,15 +77,18 @@ export function registerTempFileCleanup(req: Request, path: string): void {
   registry.paths.add(path);
   if (!registry.registered) {
     registry.registered = true;
-    const cleanup = () => {
-      for (const p of registry.paths) {
-        fs.unlink(p).catch(() => undefined);
-      }
-      registry.paths.clear();
-    };
+    const cleanup = () => { void cleanupRequestUpload(req); };
     req.on("close", cleanup);
     req.on("aborted", cleanup);
   }
+}
+
+/** Remove only files registered for this request; safe on repeated calls. */
+export async function cleanupRequestUpload(req: Request): Promise<void> {
+  const registry = getCleanupRegistry(req);
+  const paths = [...registry.paths];
+  registry.paths.clear();
+  await Promise.all(paths.map(p => fs.unlink(p).catch(() => undefined)));
 }
 
 /** Test hook: number of temp files still registered for cleanup on `req`. */
