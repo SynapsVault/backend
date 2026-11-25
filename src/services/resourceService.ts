@@ -1,4 +1,4 @@
-import { eq, and, desc, asc, isNull } from "drizzle-orm";
+import { eq, and, desc, asc, isNull, isNotNull } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db } from "../db/client.js";
 import { resources, publishers, verifications, moderationEvents } from "../db/schema.js";
@@ -209,7 +209,7 @@ export async function adminRestoreResource(
     const [updated] = await tx
       .update(resources)
       .set({ listed: true, adminDelistedAt: null })
-      .where(and(eq(resources.id, id), isNull(resources.adminDelistedAt) === false))
+      .where(and(eq(resources.id, id), isNotNull(resources.adminDelistedAt)))
       .returning({ id: resources.id });
     if (!updated) return { ok: false, error: "not_delisted" };
 
@@ -890,6 +890,10 @@ export function computeResourceEtag(meta: ResourceMeta): string {
     meta.resourceType,
     meta.mimeType ?? null,
     meta.verificationStatus,
+    meta.tags,
+    meta.publisherName,
+    meta.publisherWallet,
+    meta.onchainTxHash,
     meta.thumbnailPath ?? null,
     meta.onchainStatus ?? null,
     meta.contentHash ?? null,

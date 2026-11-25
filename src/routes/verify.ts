@@ -101,7 +101,7 @@ async function checkResourceForVerification(req: Request, res: Response, next: N
   }
   // Kept for the fee's purchase snapshot so its receipt records which
   // content was verified even if the resource changes later.
-  _res.locals.verificationResource = resource;
+  res.locals.verificationResource = resource;
   // Non-string content is rejected by validate() after payment; only hash-check real strings here.
   if (typeof content === "string" && !contentMatchesResource(content, resource)) {
     throw new AppError("CONFLICT", "Content does not match the resource's stored content");
