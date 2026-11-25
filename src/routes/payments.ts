@@ -8,6 +8,8 @@ import { getResourceById } from "../services/resourceService.js";
 import { downloadFile } from "../storage/supabaseStorage.js";
 import { attachmentDisposition } from "../lib/contentDisposition.js";
 import { hashApiKey } from "../utils/crypto.js";
+import { rawQueryFromUrl, buildWalletAuthMessageV1, buildWalletAuthMessageV2 } from "../utils/walletAuth.js";
+import { noStore } from "../middleware/security.js";
 import { toReceiptTerms } from "../lib/purchaseSnapshot.js";
 
 const router: RouterType = Router();
@@ -80,6 +82,12 @@ router.get("/payments/:id/receipt", noStore, async (req, res) => {
       paidAt: payments.paidAt,
       status: payments.status,
       deliveryStatus: payments.deliveryStatus,
+      receiptVersion: payments.receiptVersion,
+      network: payments.network,
+      asset: payments.asset,
+      resourceTitle: payments.resourceTitle,
+      resourceType: payments.resourceType,
+      resourceContentHash: payments.resourceContentHash,
     })
     .from(payments)
     .where(eq(payments.id, id))
@@ -108,7 +116,7 @@ router.get("/payments/:id/receipt", noStore, async (req, res) => {
 
 // GET /payments/:id/recover — payer-authenticated re-delivery of a settled but
 // undelivered purchase. Never creates or settles a payment (#195).
-router.get("/payments/:id/recover", async (req, res) => {
+router.get("/payments/:id/recover", noStore, async (req, res) => {
   const walletAddressHeader = req.headers["x-wallet-address"];
   const walletAddress = typeof walletAddressHeader === "string" ? walletAddressHeader : undefined;
   if (!walletAddress || !verifyWalletSignature(req, walletAddress)) {
