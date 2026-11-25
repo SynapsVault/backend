@@ -4,11 +4,11 @@ import { db } from "../db/client.js";
 import { resources, publishers, verifications, moderationEvents } from "../db/schema.js";
 import { uploadFile, deleteFile } from "../storage/supabaseStorage.js";
 import { hashFileResource, hashLinkResource } from "../utils/crypto.js";
-import { createTtlCache, createSingleFlight } from "../lib/ttlCache.js";
+import { createTtlCache } from "../lib/ttlCache.js";
 import { config } from "../config.js";
 import { enqueueWebhookEvent } from "./webhookService.js";
 import { enqueueStorageCleanup, enqueueThumbnailJob } from "./workerQueue.js";
-import { bumpCatalogVersion, getCatalogVersion } from "./catalogVersion.js";
+import { bumpCatalogVersion, getCatalogVersion } from "../lib/catalogVersion.js";
 
 // Short-lived cache for catalog/preview reads (issue #115). These endpoints are
 // hit far more often than resources change, so a small TTL cuts repeated DB
@@ -23,8 +23,6 @@ const readCache = createTtlCache<unknown>({
 // Single-flight loaders (#225): concurrent misses for the same key share one
 // DB load instead of each issuing its own query. Distinct keys stay
 // independent, and a failed load clears its pending entry so it can be retried.
-const catalogFlight = createSingleFlight<Awaited<ReturnType<typeof queryCatalog>>>();
-const metaFlight = createSingleFlight<Awaited<ReturnType<typeof queryResourceMeta>>>();
 
 // Per-filter-combination catalog response cache (#316). Keyed by a normalized
 // filter/sort/pagination key so identical queries skip the filter/sort/paginate
