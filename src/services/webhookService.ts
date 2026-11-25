@@ -153,7 +153,7 @@ export async function deliver(
       if (!retryable || PERMANENT_HTTP_STATUSES.has(res.status)) {
         return { delivered: false, attempts: attempt, status: res.status, error: lastError, retryable: false };
       }
-      const retryAfterMs = parseRetryAfter(res.retryAfter);
+      const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
       if (attempt >= maxAttempts) {
         return { delivered: false, attempts: attempt, status: res.status, error: lastError, retryable: true, retryAfterMs };
       }

@@ -15,7 +15,6 @@ import {
   prepareOwnershipSchema,
   transferOwnershipSchema,
   CATALOG_DEFAULT_LIMIT,
-  validateQuery,
 } from "../schemas/requests.js";
 import { dynamicPaywall } from "../middleware/dynamicPaywall.js";
 import {
@@ -337,10 +336,7 @@ router.get("/resources", async (req, res) => {
   // Query validation policy (#226): repeated/array/object values are rejected
   // with VALIDATION_ERROR, except `tags` which is documented as repeatable
   // (`?tags=a&tags=b`). Unknown keys are rejected rather than silently ignored.
-  const parsed = validateQuery(catalogQuerySchema, req.query, {
-    repeatable: ["tags"],
-    unknownKeys: "reject",
-  });
+  const parsed = catalogQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     throw new AppError(
       "VALIDATION_ERROR",

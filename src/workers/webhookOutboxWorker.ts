@@ -15,6 +15,7 @@ import { AppError } from "../lib/errors.js";
 import { deliver } from "../services/webhookService.js";
 import { resolveTarget } from "../services/webhookService.js";
 import type { WebhookPayload } from "../services/webhookService.js";
+import { webhookOutboxExhaustedTotal } from "../lib/metrics.js";
 import { recordWorkerPass } from "../lib/workerStatus.js";
 
 const WORKER_INTERVAL_MS = 10_000; // poll every 10 s

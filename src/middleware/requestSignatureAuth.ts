@@ -18,6 +18,7 @@ import {
 } from "../utils/requestSignature.js";
 import { rootLogger } from "../lib/logger.js";
 import { businessEventsTotal } from "../lib/metrics.js";
+import { cleanupRequestUpload } from "./uploadGuards.js";
 
 declare global {
   namespace Express {
@@ -50,6 +51,7 @@ pruneTimer.unref(); // don't keep the process alive
 
 type RedisClient = import("redis").RedisClientType;
 
+let replayStoreClosed = false;
 let redisClient: RedisClient | null = null;
 let redisConnectPromise: Promise<RedisClient | null> | null = null;
 
@@ -77,6 +79,7 @@ function connectRedis(): Promise<RedisClient | null> {
         }
       });
       await client.connect();
+      if (replayStoreClosed) { await quitOrDisconnect(client); return null; }
       redisClient = client;
       return client;
     } catch (err) {
@@ -107,7 +110,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIM
  * when Redis is not configured, or not ready within the bound.
  */
 async function getRedisClient(): Promise<RedisClient | null> {
-  if (!config.REDIS_URL) return null;
+  if (replayStoreClosed || !config.REDIS_URL) return null;
   if (redisClient?.isReady) return redisClient;
 
   // A client that exhausted its reconnect budget is closed for good — drop
@@ -150,40 +153,8 @@ function onSharedReplayUnavailable(reason: string, err?: unknown): void {
   if (closed) throw new ReplayStoreUnavailableError(reason);
 }
 
-async function connectReplayRedis(): Promise<void> {
-  let client: ReplayRedisClient | null = null;
-  try {
-    const { createClient } = await import("redis");
-    if (replayStoreClosed) return;
-    client = createClient({
-      url: config.REDIS_URL,
-      socket: {
-        connectTimeout: 5_000,
-        reconnectStrategy: () => new Error("Replay store reconnects are handled lazily"),
-      },
-    }) as ReplayRedisClient;
-    client.on("error", () => {});
-    await client.connect();
-    if (replayStoreClosed) {
-      // close() ran while we were connecting: shut this client down now.
-      await quitOrDisconnect(client);
-      return;
-    }
-    reconnectAttempt = 0;
-    nextConnectAttemptAt = 0;
-    redisClient = client;
-  } catch (err) {
-    if (client) await quitOrDisconnect(client);
-    if (replayStoreClosed) return;
-    rootLogger.warn({ event: "replay_cache_redis_unavailable", err }, "Redis replay cache unavailable — falling back to in-process cache");
-    nextConnectAttemptAt =
-      Date.now() + Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempt++);
-    redisConnectPromise = null;
-  }
-}
-
 /** Gracefully QUIT a ready client; force-close one that is not ready. */
-async function quitOrDisconnect(client: ReplayRedisClient): Promise<void> {
+async function quitOrDisconnect(client: RedisClient): Promise<void> {
   if (!client.isOpen) return;
   try {
     if (client.isReady) {
@@ -416,6 +387,7 @@ export async function requestSignatureAuth(req: Request, res: Response, next: Ne
     }
   } catch (err) {
     if (err instanceof ReplayStoreUnavailableError) {
+      void cleanupRequestUpload(req);
       next(new AppError(
         "SERVICE_UNAVAILABLE",
         "Replay protection is temporarily unavailable; retry the request shortly",
@@ -442,9 +414,9 @@ export function __resetSignatureReplayCache(): void {
 export async function __replayStoreStateForTests(): Promise<{
   closed: boolean;
   pruneTimerActive: boolean;
-  client: ReplayRedisClient | null;
+  client: RedisClient | null;
 }> {
-  getRedisClient();
+  await getRedisClient();
   if (redisConnectPromise) await redisConnectPromise;
   return { closed: replayStoreClosed, pruneTimerActive: pruneTimer !== null, client: redisClient };
 }

@@ -91,7 +91,7 @@ export const transferOwnershipSchema = z
  * (`?tags=a&tags=b`, equivalent to `?tags=a,b`). Every other query parameter
  * rejects arrays.
  */
-export const strictQueryString = (schema: z.ZodString = z.string()) =>
+export const strictQueryString = <T extends z.ZodType<string>>(schema: T) =>
   z.union([schema, z.array(z.unknown()), z.record(z.string(), z.unknown())]).transform((value, ctx) => {
     if (Array.isArray(value)) {
       ctx.addIssue({
@@ -107,7 +107,7 @@ export const strictQueryString = (schema: z.ZodString = z.string()) =>
       });
       return z.NEVER;
     }
-    return value as string;
+    return value as z.output<T>;
   });
 
 /** Sort values supported by GET /resources (#163). */
@@ -209,9 +209,9 @@ export const catalogQuerySchema = z
     verificationStatus: strictQueryString(z.enum(["verified", "pending", "rejected"])).optional(),
     minPrice: strictQueryString(z.string().regex(/^\d+(\.\d+)?$/, "must be a non-negative number")).optional(),
     maxPrice: strictQueryString(z.string().regex(/^\d+(\.\d+)?$/, "must be a non-negative number")).optional(),
-    search: strictQueryString().optional(),
+    search: strictQueryString(z.string()).optional(),
     resourceType: strictQueryString(z.enum(["file", "link"])).optional(),
-    owner: strictQueryString().optional(),
+    owner: strictQueryString(z.string()).optional(),
     sort: strictQueryString(z.enum(catalogSortValues)).optional(),
     /**
      * Exact-match tag filter (#222). Comma-separated or repeated values;
